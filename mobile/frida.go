@@ -462,6 +462,81 @@ func FridaCatalog() []FridaScriptSpec {
   } catch (e) {}
 });`,
 		},
+		{
+			ID:          "ios_ssl_bypass",
+			Name:        "iOS SSL Pinning & SecTrust Bypass",
+			Category:    "network",
+			Description: "Disables iOS SecTrustEvaluate / SecTrustEvaluateWithError pinning checks for NSURLSession and Alamofire/AFNetworking traffic capture.",
+			Frameworks:  []string{"iOS Security.framework", "NSURLSession", "Alamofire"},
+			Source: `if (ObjC.available) {
+  ['SecTrustEvaluate', 'SecTrustEvaluateWithError'].forEach(function(fn) {
+    var p = Module.findExportByName('Security', fn);
+    if (p) {
+      Interceptor.attach(p, {
+        onLeave: function(ret) {
+          ret.replace(fn === 'SecTrustEvaluateWithError' ? 1 : 0);
+          send({tag: 'ssl_unpinning', hook: fn});
+        }
+      });
+    }
+  });
+}`,
+		},
+		{
+			ID:          "ios_jailbreak_bypass",
+			Name:        "iOS Jailbreak Detection Bypass",
+			Category:    "evasion",
+			Description: "Masks common jailbreak paths (/Applications/Cydia.app, /bin/bash, frida-server) in ObjC NSFileManager and libc access/stat.",
+			Frameworks:  []string{"iOS ObjC", "libc"},
+			Source: `if (ObjC.available) {
+  var FM = ObjC.classes.NSFileManager;
+  if (FM && FM['- fileExistsAtPath:']) {
+    Interceptor.attach(FM['- fileExistsAtPath:'].implementation, {
+      onEnter: function(args) {
+        this.p = ObjC.Object(args[2]).toString();
+      },
+      onLeave: function(ret) {
+        if (/Cydia|Sileo|Zebra|\/bin\/bash|frida|Substrate/i.test(this.p)) {
+          ret.replace(0);
+          send({tag: 'anti_detection', masked: this.p});
+        }
+      }
+    });
+  }
+}`,
+		},
+		{
+			ID:          "ios_crypto_monitor",
+			Name:        "iOS CommonCrypto Monitor",
+			Category:    "crypto",
+			Description: "Hooks CCCrypt in libcommonCrypto.dylib to observe iOS AES/DES algorithms, keys, IVs, and plaintext lengths.",
+			Frameworks:  []string{"iOS CommonCrypto"},
+			Source: `var cccrypt = Module.findExportByName('libcommonCrypto.dylib', 'CCCrypt');
+if (cccrypt) {
+  Interceptor.attach(cccrypt, {
+    onEnter: function(args) {
+      send({tag: 'crypto', fn: 'CCCrypt', op: args[0].toInt32(), alg: args[1].toInt32(), keyLen: args[4].toInt32(), dataInLen: args[7].toInt32()});
+    }
+  });
+}`,
+		},
+		{
+			ID:          "ios_keychain_dump",
+			Name:        "iOS Keychain & NSUserDefaults Audit",
+			Category:    "storage",
+			Description: "Monitors runtime SecItemCopyMatching / SecItemAdd calls and NSUserDefaults writes for insecure credential persistence.",
+			Frameworks:  []string{"iOS Keychain", "NSUserDefaults"},
+			Source: `if (ObjC.available) {
+  var secAdd = Module.findExportByName('Security', 'SecItemAdd');
+  if (secAdd) {
+    Interceptor.attach(secAdd, {
+      onEnter: function(args) {
+        send({tag: 'storage', op: 'SecItemAdd', dict: ObjC.Object(args[0]).toString()});
+      }
+    });
+  }
+}`,
+		},
 	}
 }
 

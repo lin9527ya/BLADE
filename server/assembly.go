@@ -563,7 +563,7 @@ func renderCapabilityIndex(reg *skill.Registry, serverTools map[string][]string)
 				if desc == "" {
 					desc = "（无描述）"
 				}
-				b.WriteString("- " + s.Name + "：" + clipRunes(desc, 140) + "\n")
+				b.WriteString("- " + s.Name + "：" + firstSemanticUnit(desc) + "\n")
 			}
 		}
 	}
@@ -579,6 +579,46 @@ func renderCapabilityIndex(reg *skill.Registry, serverTools map[string][]string)
 		}
 	}
 	return b.String()
+}
+
+// firstSemanticUnit extracts the first complete semantic sentence/clause cleanly
+// (up to sentence-ending punctuation or whitespace/rune limit) without chopping
+// mid-token or breaking ASCII identifiers/paths (aligned with Pojun #87).
+func firstSemanticUnit(s string) string {
+	s = strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+	if s == "" {
+		return ""
+	}
+	const maxRunes = 220
+	runes := []rune(s)
+	for i, r := range runes {
+		switch r {
+		case '。', '！', '？', '；':
+			if i > 0 {
+				return strings.TrimSpace(string(runes[:i+1]))
+			}
+		case '.', '!', '?', ';':
+			// Only end on ASCII punctuation when followed by whitespace or end-of-string
+			// so version numbers (2.0), domains, or file extensions stay intact.
+			if i+1 == len(runes) || runes[i+1] == ' ' {
+				return strings.TrimSpace(string(runes[:i+1]))
+			}
+		}
+		if i+1 >= maxRunes {
+			// Walk back briefly to nearest whitespace if truncating an ASCII run.
+			cut := maxRunes
+			if runes[cut-1] < 128 {
+				for j := cut - 1; j > maxRunes-32 && j > 0; j-- {
+					if runes[j] == ' ' {
+						cut = j
+						break
+					}
+				}
+			}
+			return strings.TrimSpace(string(runes[:cut])) + "…"
+		}
+	}
+	return s
 }
 
 func idSet(ids []int64) map[int64]bool {
@@ -621,6 +661,10 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	taskMobileBound := func(ctx context.Context) bool {
 		ri := agent.RunInfoFrom(ctx)
 		return ri.TaskID > 0 && pg.TaskHasMobileDevice(ri.TaskID)
+	}
+	taskMobileApp := func(ctx context.Context) bool {
+		ri := agent.RunInfoFrom(ctx)
+		return ri.TaskID > 0 && pg.TaskHasMobileApp(ri.TaskID)
 	}
 	// OAST：总开关 + token 都在设置里；token 为空等于没配。
 	oastConfig := func() (string, string, bool) {
@@ -774,6 +818,10 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		// 移动设备工具组：仅绑定移动设备时动态开启，不污染常规 Web 任务工具面。
 		if !taskMobileBound(ctx) {
 			out = dropToolByName(out, toolpolicy.GatedTools("task_mobile_device")...)
+		}
+		// 移动样本审计与证据校验组：只要上传移动样本或绑定移动设备即放行。
+		if !taskMobileApp(ctx) {
+			out = dropToolByName(out, toolpolicy.GatedTools("task_mobile_app")...)
 		}
 		// 已下线的 BLADE 探索约束工具：DB 旧绑定也不允许重新注入任何 agent。
 		out = dropRetiredConstraintTools(out)

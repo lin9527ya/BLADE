@@ -1240,3 +1240,29 @@ ON CONFLICT DO NOTHING`, canonicalNodeID, dupNodeID); err != nil {
 	}
 	return merged, nil
 }
+
+// FindingsMissingReport returns up to limit active (non-duplicate, non-merged) findings
+// for taskID whose standalone report text is empty or whitespace-only. Used by end-of-task
+// wrapup reminders so list queries do not need to fetch bulky f.report columns.
+func (d *DB) FindingsMissingReport(taskID int64, limit int) ([]*DBFinding, error) {
+	if taskID <= 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := d.Query(`
+		SELECT `+findingSelectCols+`
+		FROM findings f
+		LEFT JOIN tasks t ON f.task_id = t.id
+		WHERE f.task_id=$1
+		  AND COALESCE(f.status,'pending') <> 'duplicate'
+		  AND btrim(COALESCE(f.report,''), E' \t\r\n\v\f') = ''
+		ORDER BY CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.id ASC
+		LIMIT $2`, taskID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanFindings(rows)
+}

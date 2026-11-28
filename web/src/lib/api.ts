@@ -60,6 +60,7 @@ import type {
   CVEImportPreview,
   CVEInput,
   DashboardSummary,
+  DecompileAuditReport,
   DeleteTaskOptions,
   DeleteTaskResult,
   Deliverable,
@@ -3017,6 +3018,14 @@ export const api = {
     post<{ ok: boolean; manifest: MobilePackageMetadata }>(`/tasks/${encodeURIComponent(taskId)}/mobile/static-audit`, {
       sample_path: samplePath,
     }),
+  runTaskMobileDecompileAudit: (
+    taskId: string,
+    opts?: { sample_path?: string; mode?: "auto" | "fast" | "deep"; skip_apktool?: boolean },
+  ) =>
+    post<{ ok: boolean; audit: DecompileAuditReport }>(
+      `/tasks/${encodeURIComponent(taskId)}/mobile/decompile-audit`,
+      opts ?? {},
+    ),
   runTaskMobileIPCFuzz: (taskId: string, maxProbes = 25) =>
     post<MobileIPCFuzzReport>(`/tasks/${encodeURIComponent(taskId)}/mobile/ipc-fuzz`, { max_probes: maxProbes }),
   runTaskMobileStorageAudit: (taskId: string, pkg = "") =>
@@ -3076,12 +3085,13 @@ export const api = {
         pkg ? `&pkg=${encodeURIComponent(pkg)}` : ""
       }`,
     ),
-  extractTaskMobileSession: (taskId: string, host = "") =>
+  extractTaskMobileSession: (taskId: string, host = "", accountLabel = "") =>
     post<{
       ok: boolean;
+      account_label?: string;
       count: number;
       extracted: { host: string; header: string; value: string; exchange_id: string }[];
-    }>(`/tasks/${encodeURIComponent(taskId)}/mobile/extract-session`, { host }),
+    }>(`/tasks/${encodeURIComponent(taskId)}/mobile/extract-session`, { host, account_label: accountLabel }),
   approveTaskMobileScope: (taskId: string, domains: string[]) =>
     post<{ ok: boolean; added: number }>(`/tasks/${encodeURIComponent(taskId)}/mobile/scope-approve`, { domains }),
   trafficMobileSetup: () => get<MobileSetupInfo>(`/traffic/mobile-setup`),

@@ -2979,6 +2979,31 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (seg[0] === "tasks" && seg[2] === "mobile" && seg[3] === "ui-crawl" && m === "POST") {
     return { serial: "mock-usb", package: "com.acme.shop", steps_executed: 0, unique_screens_visited: 0, screens: [] };
   }
+  if (seg[0] === "tasks" && seg[2] === "mobile" && seg[3] === "decompile-audit" && m === "POST") {
+    return {
+      ok: true,
+      audit: {
+        package_name: "com.acme.shop",
+        platform: "android",
+        sample_path: "tasks/1/samples/demo.apk",
+        sample_sha256: "mock-sha256",
+        quality_status: "full",
+        tools_used: ["jadx", "apktool"],
+        decompiled_dir: "tasks/1/decompiled",
+        audit_dir: "tasks/1/mobile_audit",
+        java_file_count: 142,
+        smali_file_count: 280,
+        scanned_files: 422,
+        endpoints: [],
+        secrets: [],
+        sign_candidates: [],
+      },
+    };
+  }
+  if (seg[0] === "tasks" && seg[2] === "mobile" && seg[3] === "extract-session" && m === "POST") {
+    const label = typeof b.account_label === "string" ? b.account_label : "";
+    return { ok: true, account_label: label, count: 0, extracted: [] };
+  }
 
   if (path === "/verification-ledger" && m === "GET") {
     return {

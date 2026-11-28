@@ -523,6 +523,7 @@ func (e *Engine) settleTask(ctx context.Context, t *Task, why string, fallback s
 		e.budgetStage.Delete(t.ID)
 		e.notifyTaskSettled(t.ID)
 		e.emitPrunedIntentsOnGoalDone(t, pruned)
+		e.warnFindingsMissingReport(t)
 		log.Printf("[deadline] task %s 收尾完成,终态=%s", t.ID, status)
 	default:
 		log.Printf("[deadline] task %s 收尾时已是终态,保留原状态", t.ID)
@@ -568,4 +569,27 @@ func (e *Engine) runFinalPlannerRound(ctx context.Context, t *Task) (met bool) {
 		log.Printf("[deadline] task %s 终局判定目标达成: %s", t.ID, reason)
 	}
 	return met
+}
+
+// warnFindingsMissingReport logs and emits a non-blocking reminder at task settlement
+// when confirmed/active findings still have empty detailed report markdown.
+func (e *Engine) warnFindingsMissingReport(t *Task) {
+	if e == nil || t == nil || e.m == nil || e.m.pg == nil {
+		return
+	}
+	tid, err := strconv.ParseInt(t.ID, 10, 64)
+	if err != nil || tid <= 0 {
+		return
+	}
+	missing, err := e.m.pg.FindingsMissingReport(tid, 10)
+	if err != nil || len(missing) == 0 {
+		return
+	}
+	msg := fmt.Sprintf("任务收尾提醒：尚有 %d 条活跃发现缺少详细分析正文，交付前建议核对或补写", len(missing))
+	log.Printf("[report] task %s %s", t.ID, msg)
+	e.emitActivity(t, db.Activity{
+		Worker:  "reporter",
+		Kind:    "report_gap",
+		Summary: msg,
+	})
 }

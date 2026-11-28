@@ -156,6 +156,9 @@ var Registry = []Tool{
 	{Name: "mobile_frida_hook", Class: Action, InterceptDefault: true, Footprint: true, RequiresSetting: "task_mobile_device"},
 	{Name: "mobile_rpc_sign", Class: Action, InterceptDefault: true, RequiresSetting: "task_mobile_device"},
 	{Name: "mobile_ipc_probe", Class: Action, Surface: mobileIPCSurface, InterceptDefault: true, Footprint: true, RequiresSetting: "task_mobile_device"},
+	// 移动样本审计与证据校验组：只要任务上传移动样本或绑定移动设备即放行。
+	{Name: "mobile_decompile_audit", Class: LocalWrite, RequiresSetting: "task_mobile_app"},
+	{Name: "mobile_evidence_check", Class: Read, RequiresSetting: "task_mobile_app"},
 }
 
 var byName = func() map[string]Tool {

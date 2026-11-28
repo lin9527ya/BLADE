@@ -454,6 +454,9 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedBuiltinSkillVisibility(); err != nil {
 		return fmt.Errorf("seed skill visibility: %w", err)
 	}
+	if err := d.seedMobileTaskPlaybooks(); err != nil {
+		return fmt.Errorf("seed mobile playbooks: %w", err)
+	}
 	if err := d.seedDefaultInterceptRules(); err != nil {
 		return fmt.Errorf("seed intercept rules: %w", err)
 	}
@@ -679,8 +682,10 @@ ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
 // SOURCE.md）。默认绑定到三个面向人的 agent；任意 agent 的开关仍以 agent 编辑器
 // 的可见性设置为准——本种子每次启动只补缺失行，不会覆盖用户的关闭。
 var builtinSkillVisibility = map[string][]string{
-	"api-recon":  {"auto", "pentest", "worker"},
-	"coldcoffee": {"auto", "pentest", "mainagent"},
+	"api-recon":               {"auto", "pentest", "worker"},
+	"apk-reverse":             {"pentest", "worker"},
+	"binary-mobile-reversing": {"pentest", "worker"},
+	"coldcoffee":              {"auto", "pentest", "mainagent"},
 }
 
 // seedBuiltinSkillVisibility binds the shipped built-in skills to their default

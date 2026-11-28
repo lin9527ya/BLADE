@@ -394,13 +394,43 @@ func (a *mobileBridgeAdapter) UIExplore(ctx context.Context, taskID int64, reqJS
 	if err := json.Unmarshal(reqJSON, &req); err != nil {
 		return "", err
 	}
+	var extra struct {
+		SaveName string `json:"save_name"`
+	}
+	_ = json.Unmarshal(reqJSON, &extra)
 	mob := a.s.m.Mobile()
-	if strings.EqualFold(req.Action, "dump") {
+	switch strings.ToLower(strings.TrimSpace(req.Action)) {
+	case "dump":
 		dump, err := mob.UIDump(ctx, cfg.MobileDeviceID)
 		if err != nil {
 			return "", err
 		}
 		b, _ := json.MarshalIndent(dump, "", "  ")
+		return string(b), nil
+	case "screenshot":
+		pngBytes, err := mob.Screenshot(ctx, cfg.MobileDeviceID)
+		if err != nil {
+			return "", err
+		}
+		fileName := sanitizeScreenshotName(extra.SaveName)
+		taskDir := filepath.Join(a.s.m.dir, "tasks", strconv.FormatInt(taskID, 10))
+		shotDir := filepath.Join(taskDir, "screenshots")
+		if err := os.MkdirAll(shotDir, 0o755); err != nil {
+			return "", err
+		}
+		target := filepath.Join(shotDir, fileName)
+		if err := os.WriteFile(target, pngBytes, 0o600); err != nil {
+			return "", err
+		}
+		out := map[string]any{
+			"screenshot_path": filepath.ToSlash(filepath.Join("screenshots", fileName)),
+			"bytes":           len(pngBytes),
+		}
+		if dump, derr := mob.UIDump(ctx, cfg.MobileDeviceID); derr == nil && dump != nil {
+			out["foreground_pkg"] = dump.ForegroundPkg
+			out["element_count"] = dump.ElementCount
+		}
+		b, _ := json.MarshalIndent(out, "", "  ")
 		return string(b), nil
 	}
 	if req.Package == "" {
@@ -468,6 +498,9 @@ func (a *mobileBridgeAdapter) Audit(ctx context.Context, taskID int64, kind stri
 	}
 	var params struct {
 		Package     string `json:"package"`
+		SamplePath  string `json:"sample_path"`
+		Mode        string `json:"mode"`
+		SkipApktool bool   `json:"skip_apktool"`
 		MaxProbes   int    `json:"max_probes"`
 		MaxSteps    int    `json:"max_steps"`
 		StepDelayMs int    `json:"step_delay_ms"`
@@ -482,6 +515,13 @@ func (a *mobileBridgeAdapter) Audit(ctx context.Context, taskID int64, kind stri
 	}
 
 	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "decompile_audit":
+		rep, err := a.s.runTaskDecompileAudit(ctx, taskID, params.SamplePath, params.Mode, params.SkipApktool)
+		if err != nil {
+			return "", err
+		}
+		b, _ := json.MarshalIndent(rep, "", "  ")
+		return string(b), nil
 	case "static_audit":
 		meta, err := a.s.runTaskStaticAudit(taskID, "")
 		if err != nil {
@@ -608,6 +648,7 @@ func (s *Server) registerMobileRoutes(mux routeRegistrar) {
 
 	mux.HandleFunc("GET /api/tasks/{id}/mobile/state", s.getTaskMobileState)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/static-audit", s.handleTaskMobileStaticAudit)
+	mux.HandleFunc("POST /api/tasks/{id}/mobile/decompile-audit", s.handleTaskMobileDecompileAudit)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/bind", s.bindTaskMobileDevice)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/unbind", s.unbindTaskMobileDevice)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/install", s.installTaskMobileApp)
@@ -1104,9 +1145,11 @@ func (s *Server) extractTaskMobileSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var req struct {
-		HostFilter string `json:"host"`
+		HostFilter   string `json:"host"`
+		AccountLabel string `json:"account_label"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	accountLabel := normalizeAccountLabel(req.AccountLabel)
 
 	tr := s.m.Traffic()
 	if tr == nil {
@@ -1161,14 +1204,24 @@ func (s *Server) extractTaskMobileSession(w http.ResponseWriter, r *http.Request
 			}
 			seen[ex.Host+"\x00"+key+"\x00"+val] = true
 			found = append(found, extractedCred{Host: ex.Host, Header: key, Value: val, ExID: ex.ID})
-			_, _ = t.Store.AddLinkedNode(db.KindCredential, map[string]any{
+			ident := key + "@" + ex.Host
+			credSummary := fmt.Sprintf("移动端人工登录提取会话头 %s (%s)", key, ex.Host)
+			if accountLabel != "" {
+				ident = "[" + accountLabel + "] " + ident
+				credSummary = fmt.Sprintf("移动端人工登录[%s]提取会话头 %s (%s)", accountLabel, key, ex.Host)
+			}
+			credPayload := map[string]any{
 				"kind":        "token",
-				"identity":    key + "@" + ex.Host,
+				"identity":    ident,
 				"secret":      val,
-				"summary":     fmt.Sprintf("移动端人工登录提取会话头 %s (%s)", key, ex.Host),
+				"summary":     credSummary,
 				"targets":     []string{ex.Host},
 				"exchange_id": ex.ID,
-			}, 0, db.StateLootActive, "human", nil, beginFact, db.RelYields)
+			}
+			if accountLabel != "" {
+				credPayload["account_label"] = accountLabel
+			}
+			_, _ = t.Store.AddLinkedNode(db.KindCredential, credPayload, 0, db.StateLootActive, "human", nil, beginFact, db.RelYields)
 			if len(found) >= 12 {
 				break
 			}
@@ -1179,13 +1232,26 @@ func (s *Server) extractTaskMobileSession(w http.ResponseWriter, r *http.Request
 	}
 
 	if len(found) > 0 {
-		_, _ = t.Store.AddLinkedNode(db.KindFact, map[string]any{
-			"summary": fmt.Sprintf("操作者从移动端提取了 %d 条实时会话凭据，可直接用于后续越权与业务接口测试", len(found)),
+		factSummary := fmt.Sprintf("操作者从移动端提取了 %d 条实时会话凭据，可直接用于后续越权与业务接口测试", len(found))
+		if accountLabel != "" {
+			factSummary = fmt.Sprintf("操作者从移动端（账号：%s）提取了 %d 条实时会话凭据，可用于多账号越权对比测试", accountLabel, len(found))
+		}
+		factPayload := map[string]any{
+			"summary": factSummary,
 			"tokens":  found,
-		}, 0, "confirmed", "human", nil, beginFact, db.RelYields)
+		}
+		if accountLabel != "" {
+			factPayload["account_label"] = accountLabel
+		}
+		_, _ = t.Store.AddLinkedNode(db.KindFact, factPayload, 0, "confirmed", "human", nil, beginFact, db.RelYields)
 		t.Notify()
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "extracted": found, "count": len(found)})
+	writeJSON(w, 200, map[string]any{
+		"ok":            true,
+		"account_label": accountLabel,
+		"extracted":     found,
+		"count":         len(found),
+	})
 }
 
 func (s *Server) approveTaskMobileScope(w http.ResponseWriter, r *http.Request) {
@@ -1324,17 +1390,40 @@ func fallbackStr(s, def string) string {
 	return s
 }
 
-func (s *Server) runTaskStaticAudit(taskID int64, requestedSample string) (*mobile.PackageMetadata, error) {
+func sanitizeScreenshotName(raw string) string {
+	base := strings.TrimSpace(filepath.Base(strings.ReplaceAll(raw, "\\", "/")))
+	if base == "" || base == "." || base == ".." || strings.ContainsAny(base, `/\:*?"<>|`) {
+		base = "screen_" + time.Now().Format("20060102_150405")
+	}
+	if !strings.HasSuffix(strings.ToLower(base), ".png") {
+		base += ".png"
+	}
+	return base
+}
+
+func normalizeAccountLabel(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) > 32 {
+		s = string(r[:32])
+	}
+	return s
+}
+
+func (s *Server) resolveTaskSampleAbs(taskID int64, requestedSample string) (string, db.TaskMobileConfig, error) {
 	cfg, err := s.m.pg.TaskMobileInfo(taskID)
 	if err != nil {
-		return nil, err
+		return "", cfg, err
 	}
 	sampleRel := strings.TrimSpace(requestedSample)
 	if sampleRel == "" && len(cfg.AppSamplePaths) > 0 {
 		sampleRel = cfg.AppSamplePaths[0]
 	}
 	if sampleRel == "" {
-		return nil, fmt.Errorf("任务 #%d 暂无可审计的安装包样本", taskID)
+		return "", cfg, fmt.Errorf("任务 #%d 暂无可审计的安装包样本", taskID)
 	}
 	baseAbs, _ := filepath.Abs(s.m.dir)
 	targetAbs := sampleRel
@@ -1343,10 +1432,18 @@ func (s *Server) runTaskStaticAudit(taskID int64, requestedSample string) (*mobi
 	}
 	targetAbs, err = filepath.Abs(targetAbs)
 	if err != nil || !strings.HasPrefix(targetAbs, baseAbs+string(filepath.Separator)) {
-		return nil, fmt.Errorf("非法样本路径")
+		return "", cfg, fmt.Errorf("非法样本路径")
 	}
 	if _, err := os.Stat(targetAbs); err != nil {
-		return nil, fmt.Errorf("样本文件不存在或已清理: %v", err)
+		return "", cfg, fmt.Errorf("样本文件不存在或已清理: %v", err)
+	}
+	return targetAbs, cfg, nil
+}
+
+func (s *Server) runTaskStaticAudit(taskID int64, requestedSample string) (*mobile.PackageMetadata, error) {
+	targetAbs, cfg, err := s.resolveTaskSampleAbs(taskID, requestedSample)
+	if err != nil {
+		return nil, err
 	}
 	meta, err := mobile.InspectPackage(targetAbs)
 	if err != nil {
@@ -1367,6 +1464,58 @@ func (s *Server) runTaskStaticAudit(taskID int64, requestedSample string) (*mobi
 	return meta, nil
 }
 
+func (s *Server) runTaskDecompileAudit(ctx context.Context, taskID int64, requestedSample, mode string, skipApktool bool) (*mobile.DecompileAuditReport, error) {
+	targetAbs, cfg, err := s.resolveTaskSampleAbs(taskID, requestedSample)
+	if err != nil {
+		return nil, err
+	}
+	taskRoot := filepath.Join(s.m.dir, "tasks", strconv.FormatInt(taskID, 10))
+	if err := os.MkdirAll(taskRoot, 0o755); err != nil {
+		return nil, err
+	}
+	rep, err := mobile.DecompileAndAudit(ctx, targetAbs, taskRoot, mobile.DecompileOptions{
+		Mode:        mode,
+		SkipApktool: skipApktool,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if rep.ManifestMeta != nil {
+		rel, _ := filepath.Rel(s.m.dir, targetAbs)
+		rep.ManifestMeta.SamplePath = filepath.ToSlash(rel)
+		manRaw, _ := json.Marshal(rep.ManifestMeta)
+		_ = s.m.pg.UpdateTaskAppMetadata(taskID, cfg.AppSamplePaths, manRaw, string(rep.ManifestMeta.Platform), rep.ManifestMeta.PackageName)
+	}
+	s.recordDecompileAuditFacts(taskID, rep)
+	return rep, nil
+}
+
+func (s *Server) recordDecompileAuditFacts(taskID int64, rep *mobile.DecompileAuditReport) {
+	if rep == nil {
+		return
+	}
+	t, ok := s.m.Task(strconv.FormatInt(taskID, 10))
+	if !ok || t == nil || t.Store == nil {
+		return
+	}
+	beginFact, _ := t.Store.OriginFactID()
+	if beginFact <= 0 {
+		return
+	}
+	_, _ = t.Store.AddLinkedNode(db.KindFact, map[string]any{
+		"summary": fmt.Sprintf("移动端反编译白盒审计完成（quality=%s，Java=%d，Smali=%d，端点=%d，硬编码提示=%d，签名算法候选=%d）",
+			rep.QualityStatus, rep.JavaFileCount, rep.SmaliFileCount, len(rep.Endpoints), len(rep.Secrets), len(rep.SignCandidates)),
+		"audit_dir":       rep.AuditDir,
+		"quality_status":  rep.QualityStatus,
+		"package_name":    rep.PackageName,
+		"sample_sha256":   rep.SampleSHA256,
+		"endpoints_count": len(rep.Endpoints),
+		"secrets_count":   len(rep.Secrets),
+		"sign_count":      len(rep.SignCandidates),
+	}, 0, "confirmed", "system", nil, beginFact, db.RelYields)
+	t.Notify()
+}
+
 func (s *Server) handleTaskMobileStaticAudit(w http.ResponseWriter, r *http.Request) {
 	taskID, ok := parseTaskIDOr404(s, w, r)
 	if !ok {
@@ -1382,6 +1531,25 @@ func (s *Server) handleTaskMobileStaticAudit(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "manifest": meta})
+}
+
+func (s *Server) handleTaskMobileDecompileAudit(w http.ResponseWriter, r *http.Request) {
+	taskID, ok := parseTaskIDOr404(s, w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		SamplePath  string `json:"sample_path"`
+		Mode        string `json:"mode"`
+		SkipApktool bool   `json:"skip_apktool"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	rep, err := s.runTaskDecompileAudit(r.Context(), taskID, req.SamplePath, req.Mode, req.SkipApktool)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "audit": rep})
 }
 
 func (s *Server) runTaskMobileIPCFuzz(w http.ResponseWriter, r *http.Request) {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lin9527ya/blade/db"
+	"github.com/lin9527ya/blade/mobile"
 	"github.com/lin9527ya/blade/report"
 )
 
@@ -285,6 +286,62 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 			reportGoals = append(reportGoals, report.GoalNote{Text: p.Text, VulnClass: p.VulnClass, State: n.State})
 		}
 	}
+	var mobileProfile *report.MobileReportProfile
+	if tid > 0 {
+		if mcfg, mcfgErr := pg.TaskMobileInfo(tid); mcfgErr == nil &&
+			(strings.EqualFold(mcfg.AppMode, "mobile") || mcfg.AppPackageName != "" || len(mcfg.AppSamplePaths) > 0 || mcfg.MobileDeviceID != "") {
+			mp := &report.MobileReportProfile{
+				Platform:      mcfg.AppPlatform,
+				PackageName:   mcfg.AppPackageName,
+				SamplePaths:   mcfg.AppSamplePaths,
+				BoundDeviceID: mcfg.MobileDeviceID,
+			}
+			if len(mcfg.AppManifestJSON) > 0 {
+				var meta mobile.PackageMetadata
+				if json.Unmarshal(mcfg.AppManifestJSON, &meta) == nil {
+					if meta.Platform != "" {
+						mp.Platform = string(meta.Platform)
+					}
+					if meta.PackageName != "" {
+						mp.PackageName = meta.PackageName
+					}
+					mp.VersionName = meta.VersionName
+					mp.VersionCode = meta.VersionCode
+					mp.SampleSHA256 = meta.SHA256
+					mp.SignatureSchemes = meta.SignatureSchemes
+					mp.Frameworks = meta.Frameworks
+					mp.Packers = meta.Packers
+					mp.Debuggable = meta.Debuggable
+					mp.AllowBackup = meta.AllowBackup
+					if meta.CleartextTraffic != nil {
+						mp.UsesCleartext = *meta.CleartextTraffic
+					}
+					mp.CandidateDomains = meta.CandidateDomains
+					for _, sf := range meta.StaticFindings {
+						mp.StaticFindings = append(mp.StaticFindings, report.MobileStaticFindingSummary{
+							ID:       sf.ID,
+							Rule:     sf.Category,
+							Severity: sf.Severity,
+							Title:    sf.Title,
+							Location: sf.Location,
+							MASVS:    sf.MASVS,
+						})
+					}
+				}
+			}
+			if mp.BoundDeviceID != "" {
+				if devs, derr := pg.ListMobileDevices(); derr == nil {
+					for _, dev := range devs {
+						if dev.ID == mp.BoundDeviceID || dev.Serial == mp.BoundDeviceID {
+							mp.BoundDeviceModel = dev.Model
+							break
+						}
+					}
+				}
+			}
+			mobileProfile = mp
+		}
+	}
 	input := report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(), Goals: reportGoals,
 		AssetCounts: counts, Findings: live, Unconfirmed: unconfirmed, Retracted: retracted, Closed: closed, NotProbed: notProbed, NoEvidence: noEvidence, Coverage: coverage, Retests: retestNotes,
@@ -297,6 +354,7 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		LootUsedBy:       lootUsedBy, Chains: chains, ADPaths: adPaths,
 		TechniqueTally: techniqueTally, Detections: detections,
 		CredentialAttempts: credAttempts,
+		Mobile:             mobileProfile,
 	}
 	if r.Context().Err() != nil {
 		return

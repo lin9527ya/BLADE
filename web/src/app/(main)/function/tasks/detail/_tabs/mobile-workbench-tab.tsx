@@ -30,6 +30,7 @@ import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import { deviceCapabilitySummary, formatSampleBytes, uiElementDisplayLabel } from "@/lib/mobile-utils";
 import type {
+  DecompileAuditReport,
   FridaScriptSpec,
   MobileDevice,
   MobileIPCFuzzReport,
@@ -97,6 +98,8 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
   const [ipcFuzz, setIPCFuzz] = React.useState<MobileIPCFuzzReport | null>(null);
 
   // Sandbox browser, storage & logcat audits
+  const [decompileAudit, setDecompileAudit] = React.useState<DecompileAuditReport | null>(null);
+  const [accountLabel, setAccountLabel] = React.useState("user_a");
   const [sandboxPath, setSandboxPath] = React.useState("");
   const [sandboxEntries, setSandboxEntries] = React.useState<MobileSandboxEntry[]>([]);
   const [sandboxPreview, setSandboxPreview] = React.useState("");
@@ -236,19 +239,37 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
             </div>
             <div className="flex items-center gap-1.5">
               {manifest && state?.app_sample_paths?.length ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy !== ""}
-                  onClick={() =>
-                    void runAction("SAST 复检", async () => {
-                      await api.runTaskMobileStaticAudit(taskId);
-                      toast.success("已完成深度静态 SAST/二进制安全体检");
-                    })
-                  }
-                >
-                  深度 SAST 体检
-                </Button>
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy !== ""}
+                    onClick={() =>
+                      void runAction("SAST 复检", async () => {
+                        await api.runTaskMobileStaticAudit(taskId);
+                        toast.success("已完成深度静态 SAST/二进制安全体检");
+                      })
+                    }
+                  >
+                    深度 SAST 体检
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy !== ""}
+                    onClick={() =>
+                      void runAction("反编译白盒审计", async () => {
+                        const r = await api.runTaskMobileDecompileAudit(taskId, { mode: "auto" });
+                        setDecompileAudit(r.audit);
+                        toast.success(
+                          `反编译白盒审计完成（quality=${r.audit.quality_status}，端点=${r.audit.endpoints?.length ?? 0}）`,
+                        );
+                      })
+                    }
+                  >
+                    反编译白盒审计
+                  </Button>
+                </>
               ) : null}
               <input
                 ref={sampleInputRef}
@@ -296,6 +317,46 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                     <Badge variant="outline">签名: {manifest.signature_schemes.join("/")}</Badge>
                   )}
                 </div>
+
+                {decompileAudit && (
+                  <div className="grid gap-1.5 rounded-md border bg-muted/20 p-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium">
+                      <span>反编译白盒审计 ({decompileAudit.quality_status})</span>
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        Java {decompileAudit.java_file_count} · Smali {decompileAudit.smali_file_count} · 端点{" "}
+                        {decompileAudit.endpoints?.length ?? 0} · 秘钥提示 {decompileAudit.secrets?.length ?? 0} ·
+                        签名候选 {decompileAudit.sign_candidates?.length ?? 0}
+                      </span>
+                    </div>
+                    {decompileAudit.endpoints && decompileAudit.endpoints.length > 0 && (
+                      <div className="max-h-28 space-y-1 overflow-auto font-mono text-[11px]">
+                        {decompileAudit.endpoints.slice(0, 10).map((ep, idx) => (
+                          <div key={`${ep.url}:${ep.line}:${idx}`} className="truncate text-muted-foreground">
+                            [{ep.method || "URL"}] {ep.url}{" "}
+                            <span className="opacity-70">
+                              ({ep.file}:{ep.line})
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {decompileAudit.secrets && decompileAudit.secrets.length > 0 && (
+                      <div className="max-h-24 space-y-1 overflow-auto font-mono text-[11px]">
+                        {decompileAudit.secrets.slice(0, 6).map((sc, idx) => (
+                          <div
+                            key={`${sc.kind}:${sc.line}:${idx}`}
+                            className="truncate text-amber-600 dark:text-amber-400"
+                          >
+                            [{sc.kind}] {sc.preview}{" "}
+                            <span className="opacity-70">
+                              ({sc.file}:{sc.line})
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {manifest.static_findings && manifest.static_findings.length > 0 && (
                   <div className="grid gap-1.5 rounded-md border p-2.5">
@@ -1033,24 +1094,39 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
               </CardTitle>
               <CardDescription>人工完成验证码/刷脸登录后，点击提取实时 Token 注入 Agent 黑板</CardDescription>
             </div>
-            <Button
-              size="xs"
-              variant="default"
-              disabled={busy !== ""}
-              onClick={() =>
-                void runAction("提取登录会话", async () => {
-                  const res = await api.extractTaskMobileSession(taskId);
-                  if (res.count > 0) {
-                    toast.success(`成功提取并写入 ${res.count} 条移动端会话凭据`);
-                  } else {
-                    toast.info("近期抓包中暂未检测到认证请求头，请先操作 APP 登录接口");
-                  }
-                })
-              }
-            >
-              <KeyRoundIcon className="size-3" />
-              提取实时会话
-            </Button>
+            <div className="flex items-center gap-1.5">
+              <NativeSelect
+                aria-label="会话账号角色"
+                value={accountLabel}
+                onChange={(e) => setAccountLabel(e.target.value)}
+                className="h-7 w-28 text-xs"
+              >
+                <NativeSelectOption value="user_a">账号 A (user_a)</NativeSelectOption>
+                <NativeSelectOption value="user_b">账号 B (user_b)</NativeSelectOption>
+                <NativeSelectOption value="admin">管理员 (admin)</NativeSelectOption>
+                <NativeSelectOption value="">不标注角色</NativeSelectOption>
+              </NativeSelect>
+              <Button
+                size="xs"
+                variant="default"
+                disabled={busy !== ""}
+                onClick={() =>
+                  void runAction("提取登录会话", async () => {
+                    const res = await api.extractTaskMobileSession(taskId, "", accountLabel);
+                    if (res.count > 0) {
+                      toast.success(
+                        `成功提取并写入 ${res.count} 条移动端会话凭据${res.account_label ? `（${res.account_label}）` : ""}`,
+                      );
+                    } else {
+                      toast.info("近期抓包中暂未检测到认证请求头，请先操作 APP 登录接口");
+                    }
+                  })
+                }
+              >
+                <KeyRoundIcon className="size-3" />
+                提取实时会话
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="grid gap-3 text-xs">
             <div className="flex flex-wrap gap-1.5">

@@ -67,7 +67,7 @@ func TestAppUploadCreateTaskAndDynamicToolGating(t *testing.T) {
 		}
 		t.Fatal(err)
 	}
-	defer m.Close()
+	t.Cleanup(func() { _ = m.Close() })
 	// Open traffic store/CA without starting go-mitmproxy's attackerListener loop
 	// (upstream go-mitmproxy@v1.9.2 attackerListener.Close is a no-op under goleak).
 	tr, err := traffic.Open(filepath.Join(m.dir, "traffic"), "127.0.0.1:0")

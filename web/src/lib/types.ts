@@ -4288,6 +4288,43 @@ export interface MobileUICrawlResult {
   }[];
 }
 
+export interface DecompiledEndpoint {
+  method?: string;
+  url: string;
+  file: string;
+  line: number;
+}
+
+export interface DecompiledSecret {
+  kind: string;
+  preview: string;
+  file: string;
+  line: number;
+}
+
+export interface DecompiledSignCandidate {
+  symbol: string;
+  file: string;
+  line: number;
+}
+
+export interface DecompileAuditReport {
+  package_name?: string;
+  platform?: string;
+  sample_path: string;
+  sample_sha256?: string;
+  quality_status: "full" | "partial_packed" | "raw_only" | string;
+  tools_used?: string[];
+  decompiled_dir: string;
+  audit_dir: string;
+  java_file_count: number;
+  smali_file_count: number;
+  scanned_files: number;
+  endpoints?: DecompiledEndpoint[];
+  secrets?: DecompiledSecret[];
+  sign_candidates?: DecompiledSignCandidate[];
+}
+
 export interface TaskMobileState {
   task_id: string;
   app_mode: string;

@@ -1,140 +1,127 @@
 ---
 name: apk-reverse
-description: Android APK 逆向。当目标只给了一个 APK/安装包，或需要分析 APP 的接口、签名算法、硬编码密钥、风控/证书校验/root 检测，以及重打包、Frida 动态 Hook、.so 分流时使用。覆盖 jadx/apktool/aapt/adb/frida/objection 的完整静态+动态链路；无真机时给出静态+流量模拟的替代路径。
+description: Android/iOS 移动应用逆向与全链路审计。当目标给了 APK/XAPK/APKM/APKS/AAB/IPA 安装包或绑定移动测试机，需要分析接口、签名算法、硬编码密钥、证书锁定/Root/越狱检测、Flutter/Hermes/WebView 跨端逻辑，以及重打包、Frida 动态 Hook、.so/.dylib 分流与闭环取证时使用。
 tags:
   cwe: [CWE-312, CWE-321, CWE-295, CWE-489, CWE-798, CWE-926, CWE-1104]
   attack: [T1409, T1426, T1430, T1516, T1521]
-  class: [mobile, android, reverse, forensics]
+  class: [mobile, android, ios, reverse, forensics]
 ---
 
-# APK 逆向 · 内部版作业规范
+# 移动 APP 逆向与渗透作业规范
 
-黑灰产分发常只给一个 APK / 安装包。本技能负责把包拆开，拿到底层的东西：
-**接口、签名算法、密钥、风控逻辑**，并把这些作为证据固定下来。
+当任务附带样本包（APK / XAPK / APKM / APKS / AAB / IPA）或绑定测试机时，本技能负责打通：
+**安全解包与质量门控反编译 → 接口/签名/密钥/风控还原 → 跨端与 Native 分流 → 动态 Hook 与抓包 → 后端 API 越权验证 → SRC 规范化取证**。
 
-## 与本平台的衔接（先读这段）
+## 与 BLADE 平台的衔接（先读这段）
 
-| 场景 | 用平台能力 |
+| 场景 | 使用 BLADE 平台能力 |
 |---|---|
-| 样本本身是证据 | `Bash sha256sum` 计算哈希，用 `record_fact` 登记路径与 SHA-256（先哈希，再解包） |
-| 接口/密钥/结论 | `record_fact` 落库（类名、方法、算法、密钥位置） |
-| 后端接口测试 | 逆向拿到接口后转 `http_probe` / `auth_request` / `diff_responses` |
-| 流量还原 | 平台流量捕获（默认开）或 mitmproxy；`traffic` 里看请求 |
-| 已知组件 CVE | `lookup_cves` 查库；`run_execution` 跑 nuclei（仍走审批与 RoE） |
+| 样本安全解包、质量门控反编译与源码白盒扫描 | **优先调用** `mobile_decompile_audit`（防 Zip Slip/炸弹限额，支持 XAPK/APKM/APKS/AAB/APK/IPA，产出落 `tasks/<id>/mobile_audit/`）；辅助 `record_fact` 登记包名与 SHA-256 |
+| 设备态检查、静态/沙箱/Logcat 体检 | `mobile_device_status` / `mobile_app_ctrl`（`static_audit`、`sandbox_audit`、`logcat_audit`、`push_ca`） |
+| 代理抓包与 Pinning 检测 | `mobile_proxy_ctrl`（`enable_usb` / `enable_transparent` 阻断 QUIC UDP 443 降级 / `enable_lan` / `pinning_alerts`） |
+| 界面遍历与截图留证 | `mobile_ui_explore`（`dump` / `screenshot` 落盘至 `tasks/<id>/screenshots/` / `auto_crawl` / `deeplink`） |
+| 动态 Hook 与自定义签名重签 | `mobile_frida_hook`（含 `flutter_ssl_bypass`、`native_tls_hook`、`storage_crypto_audit`、`ios_ssl_bypass` 等）+ `mobile_rpc_sign` + `http_request(mobile_sign_method=...)` |
+| 导出组件/IPC 自动化模糊探测 | `mobile_ipc_probe`（`activity` / `service` / `broadcast` / `provider` / `deeplink` / `auto_fuzz`） |
+| 后端接口验证与越权测试 | `http_request` / `http_probe` / `auth_request` / `diff_responses`（配合工作台 `extract-session` `account_label` A/B 双账号会话对比） |
+| 已知第三方组件 CVE | `lookup_cves` 查库，并在授权范围内用 `nuclei` 或 PoC 验证 |
+| 结论提交前质量自检 | **`mobile_evidence_check`**（校验样本溯源、源码/Hook 定位、HTTP 闭环、纯客户端高危误判、凭据脱敏）后调用 `report_finding` |
 
-## 环境事实（服务器形态）
+## 环境事实（服务器与真机形态）
 
-- 工具链由 `install.sh` / Docker 镜像 / 宿主环境页装好：`java`、`apktool`、`aapt`、
-  `adb`、`jadx`、`frida`、`objection`。
-- **服务器通常没有真机/模拟器**：
-  - 有设备（USB/远程 adb，例如 `adb connect 127.0.0.1:7555`）→ 走真机动态链路；
-  - 无设备 → **静态为主 + 流量模拟**：jadx/apktool 读逻辑，接口用平台流量捕获/代理验证，
-    不做需要真机的 Hook（写清「需要设备后才能完成」）。
-- 不在服务器上装模拟器；需要动态验证时向用户要设备或授权环境。
+- **工具链**：`java`、`jadx`、`apktool`、`aapt`/`aapt2`、`apksigner`、`zipalign`、`adb`、`frida`、`objection`、`radare2`；iOS 支持 `idevice_id`、`ideviceinfo`、`iproxy`（`libimobiledevice` / usbmuxd）。可在平台宿主环境页自检可用性。
+- **有设备（Android USB/Wi-Fi ADB 或 iOS USB/usbmuxd）** → 静态白盒与动态 Hook/抓包/UI 遍历并行推进。
+- **无设备** → **静态白盒 + 接口还原为主**：用 `mobile_decompile_audit`（含自动质量门控 `full` / `partial_packed` / `raw_only`）+ `jadx`/`apktool`/`radare2` 提取接口、签名算法与凭据，用平台代理与 `http_request` 直接打授权后端，并在报告中如实标明「未绑定测试机，动态验证未执行」。
+- 不在服务器上强装模拟器；需真机动态绕过/生物识别测试时请求操作者接入设备或在移动工作台完成人工登录。
 
-## 自带脚本（优先用）
+## 自带辅助脚本（必须通过 `${SKILL_DIR}` 调用）
 
 | 脚本 | 用途 |
 |---|---|
-| `scripts/decode.sh` | 一次跑 jadx + apktool，输出 package/java_files/smali_dirs/so_files 摘要 |
-| `scripts/frida-run.sh` | 设备/进程列举、spawn/attach 注入，避免 `-f/-n/-U` 混用出错 |
-| `scripts/rebuild-sign-install.sh` | `apktool b` → zipalign → apksigner → 可选 `adb install` |
+| `${SKILL_DIR}/scripts/decode.sh` | 一次跑 jadx + apktool，输出 Java/Smali/SO 目录统计 |
+| `${SKILL_DIR}/scripts/frida-run.sh` | 设备/进程列举、spawn/attach 注入（支持 `--usb`/`--remote`/`--spawn`） |
+| `${SKILL_DIR}/scripts/rebuild-sign-install.sh` | `apktool b` → `zipalign` → `apksigner` → 可选 `adb install` |
 
 ```bash
-bash scripts/decode.sh -ApkPath /data/sample/app.apk -Clean
-bash scripts/frida-run.sh -Usb -ListProcesses
-bash scripts/rebuild-sign-install.sh -ProjectDir apktool_out -Install -Reinstall -DeviceSerial 127.0.0.1:7555
+bash "${SKILL_DIR}/scripts/decode.sh" tasks/<id>/samples/app.apk --clean
+bash "${SKILL_DIR}/scripts/frida-run.sh" --usb --list-processes
+bash "${SKILL_DIR}/scripts/rebuild-sign-install.sh" apktool_out --install --reinstall --device 127.0.0.1:7555
 ```
 
-一行命令直接调用即可，不必封装：`adb devices`、`adb logcat`、`frida-ps -U`、
-`jadx --version`、`apktool --version`。
+一行命令可直接调用：`adb devices`、`adb logcat`、`frida-ps -U`、`idevice_id -l`、`ideviceinfo -u <udid>`、`iproxy 27042 27042 -u <udid>`。
 
 ## 工作流
 
-### 1. Triage（先定性，不动手）
+### 1. 安全解包与 Triage（先校验，后分析）
 
-1. 原始包先 `sha256sum app.apk`，再用 `record_fact` 登记哈希（证据链起点）。
-2. `jadx -d jadx_out app.apk` 出 Java；`apktool d app.apk -o apktool_out` 出 smali+资源。
-3. 先看：`AndroidManifest.xml`（权限/导出组件/主入口/debuggable/allowBackup）、
-   `package`、`application`、`lib/**/*.so` 是否存在、包名与签名（`apksigner verify --print-certs`）。
-4. 威胁形态速查：透明/隐藏图标（`aapt dump badging` 看 label/icon）、
-   Magisk/脚本格机特征、持久化路径（`service.d`/`priv-app`）——**特征与 URL 入证，不执行**。
+1. 首选调用 `mobile_decompile_audit`（自动防 Zip Slip/路径穿越，解包 XAPK/APKM/APKS/AAB/IPA/APK，执行质量门控反编译，并产出 `tasks/<id>/mobile_audit/{manifest.json,report.json,endpoints.txt,secrets.txt}`）。
+2. 查看 `quality_status`：
+   - `full`：jadx + apktool 均正常产出源码；
+   - `partial_packed`：存在加固/壳（Java 文件过少），切向真机脱壳 / Frida `native_tls_hook` / `.so` 分析，不在缺源码的前提下误判"无漏洞"；
+   - `raw_only`：仅完成目录与原始二进制/Manifest 扫描（或 `fast` 模式）。
+3. 核对 `AndroidManifest.xml`（或 iOS `Info.plist` / `embedded.mobileprovision`）：权限、导出组件、Deep Link scheme、`debuggable`、`allowBackup`、`usesCleartextTraffic`、ATS 策略、签名方案 v1-v4（Janus/StrandHogg）。
 
-### 2. Java 逻辑（jadx）
+### 2. Java / Kotlin / Smali 逻辑
 
-从 `jadx_out` 读：MainActivity/Application、登录、网络、加密、风控、SDK 初始化。
-关键词：`login` `sign` `encrypt` `cipher` `token` `root` `certificate` `trust`
-`okhttp` `retrofit` `webview` `baseUrl` `api` `secret` `accessKey`。
+优先阅读 `mobile_audit/report.json` 中命中的 `endpoints`、`secrets` 与 `sign_candidates`，再在 `decompiled/jadx/` 或 `decompiled/apktool/` 中定位：
+- `Application`、登录与 Refresh Token 逻辑、网络封装（OkHttp Interceptor / Retrofit / Volley）、统一加解密与签名类；
+- WindVane/JSBridge 注解（`@JavascriptInterface`）、`WebView.loadUrl` 可信域校验；
+- 产出：**完整接口清单**（Method/Path/Host）、**可复算签名/加密逻辑**（若纯算法难还原，直接转 Frida RPC 导出）、**硬编码凭据**（raw 存 loot/fact 并校验有效性，报告必须掩码）。
 
-产出三样东西：**接口清单**（完整 URL/path/参数）、**签名/加密算法**（smali 级还原到可复算）、
-**硬编码凭据**（AK/SK/token/appSecret，全文落 fact，报告里掩码）。
+### 3. 跨端框架与混合容器分流（Flutter / React Native / Hybrid）
 
-### 3. Smali 与资源层（apktool）
+- 识别到 `libflutter.so` / `libapp.so`：Flutter 无视系统代理、且自行携带 BoringSSL 校验证书 → 使用 `mobile_proxy_ctrl(action="enable_transparent")` + `mobile_frida_hook(modules=["flutter_ssl_bypass"])`。
+- 识别到 React Native (`index.android.bundle` / Hermes 字节码)：用 `static_audit` 与 strings/Hermes 反编译定位 GraphQL/REST 端点与固定秘钥。
+- 详情参见 [跨端与混合容器专项参考](${SKILL_DIR}/references/05-cross-platform-hybrid.md)。
 
-jadx 不完整/混淆重/需要 patch 时切 `apktool_out`：`smali*/`、`res/values/strings.xml`、
-`AndroidManifest.xml`。可 patch：`android:exported`、`debuggable`、root 检测返回值、
-登录校验、证书校验分支。
-
-### 4. 重打包（仅在需要时）
+### 4. 重打包（仅授权测试验证，谨慎使用）
 
 ```bash
 apktool b apktool_out -o rebuilt.apk
-# 对齐 + 签名 + 安装（调试 keystore 自动生成并复用）
-bash scripts/rebuild-sign-install.sh -ProjectDir apktool_out -Install -Reinstall
+bash "${SKILL_DIR}/scripts/rebuild-sign-install.sh" apktool_out --install --reinstall
 ```
 
-**边界**：重打包只用于授权样本的**分析验证**；改包后的产物不得用于投放/二次分发。
+**边界**：部分 APP 会校验 APK 签名哈希，重打包失败时优先改用 Frida 内存 Hook；改包产物严禁向外分发。
 
-### 5. 动态 Hook（有设备才做）
+### 5. 动态 Hook 与透明抓包（绑定设备时）
 
-先 Java 层，再 native：
-- Hook 登录/签名/加密：`javax.crypto`、`MessageDigest`、`OkHttp`/`Retrofit` 拦截器；
-- 绕过：root 检测、SSL pinning、调试检测（objection 一条命令先试：
-  `objection -g com.example.app explore` → `android sslpinning disable`）；
-- 原则：先打印参数与返回值，再决定是否改返回值。
+1. 代理抓包顺序：`enable_usb` → 遇断网或告警先检查 `pinning_alerts` / 上系统 CA (`push_ca`) → 遇无视系统代理、Cronet、Flutter 切 **`enable_transparent`**（Root iptables + UDP 443 QUIC 阻断）。
+2. Frida 注入：优先 `mobile_frida_hook` 内置模板：
+   - Android 绕过与审计：`ssl_pinning_bypass`、`root_bypass`、`flutter_ssl_bypass`、`native_tls_hook`、`storage_crypto_audit`、`flag_secure_bypass`、`socket_traffic_tap`；
+   - iOS Hook 模板：`ios_ssl_bypass`、`ios_jailbreak_bypass`、`ios_crypto_monitor`、`ios_keychain_dump`（USB 下配合 `iproxy 27042 27042` 连接 `127.0.0.1:27042`）。
+3. 参数签名接管：用 Frida 导出签名函数 `rpc.exports.<fn>` 后，直接在 `http_request(mobile_sign_method="<fn>")` 中自动签名并并发测试越权/注入；用 `mobile_ui_explore(action="screenshot")` 留存 UI 现场图。
 
-脚本与可复用脚本模板见 `references/frida-cookbook.md`、`references/frida-bypass-kit.md`。
+### 6. `.so` / Mach-O 分流
 
-### 6. `.so` 分流
+Java/ObjC 仅作 JNI / Swift 包装、`System.loadLibrary()` 后进入 native 校验、或核心加密/风控在 `.so` / Mach-O → 立即转 native 分析：检查 ELF `PIE/NX/RELRO/Canary` 与 `strings` / `readelf -s` / `radare2` 或连接 `ida-reverse`；同时关注第三方开源库版本（OpenSSL/FFmpeg 等）映射已知 CVE。
 
-Java 只是 JNI 包装 / 核心签名在 native / `System.loadLibrary()` 后逻辑消失 / 校验在 `.so`
-→ 立刻切 native：先 `strings`、`readelf -s`、radare2 快速 triage；深入反编译用
-`ida-reverse` 或 Ghidra。APK 内的 `.so` 可 `unzip -j` 取出单独存档。
+### 7. 后端接口主战场 & 闭环自检
 
-### 7. 后端接口验证（主战场）
-
-逆向只是拿钥匙。拿到接口后用平台工具直接打授权域名：
-未授权/越权（换 id/token）/注入/逻辑；签名算法可复算后自己构造请求。
-按取证口径**可以导出样本与数据**，但要分批控速、登记哈希（先 sha256sum，再 record_fact）。
-
-## 输出要求
-
-至少说明：包名与签名、入口组件、关键逻辑在 Java/smali/`.so` 哪一层、
-接口清单、签名/加密算法、硬编码凭据（掩码）、已确认的敏感点
-（登录/签名/root/SSL/WebView/JNI）、patch 或 Hook 的具体位置、以及**没做成的事**
-（例如无设备导致动态验证未做）。
+逆向只是拿钥匙。拿到接口与会话头后，回到平台授权资产开展：未授权访问、A/B 账号越权（工作台「提取实时会话」标注 `user_a` / `user_b` 配合 `diff_responses`）、注入、逻辑越权与敏感数据导出验证。
+提交 `report_finding` 前**务必先调用 `mobile_evidence_check`**：确认样本包名与 SHA-256 完整、源码或 Hook 定位明确、服务端洞具备 HTTP 请求响应证据、纯客户端配置不得定性高危、且报告正文中不含明文 JWT/AK/私钥。
 
 ## 禁止事项
 
-- 不要一上来就改 smali；先看 manifest 与主入口。
-- 不要把 jadx 反编译不完整等同于「逻辑不可分析」（换 smali/换工具再判）。
-- 不要在 `.so` 明显承载核心逻辑时死磕 Java 层。
-- 不逆向/测试授权外的 APP；不绕过付费与版权保护做非测试用途。
-- 不执行样本里的任何命令/脚本（`curl|sh`、格机指令）——只提取特征入证。
+- 不要在未看 manifest 与 `mobile_audit/report.json` 前盲改 smali。
+- 不要把加固壳导致的 `jadx` 反编译缺失等同于「没有漏洞」（应标注 `partial_packed` 并转动态或 native 验证）。
+- 禁止仅凭客户端发现（如 `allowBackup=true`、弱混淆、本地提示文本）未经后端利用验证就直接上报高危。
+- 不执行样本中的任何远控脚本、格机命令或未授权域名攻击；所有导出数据严格控速且仅落任务目录。
 
 ## 参考文件（按需打开，禁止通读）
 
 | 文件 | 内容 |
 |---|---|
-| `references/apk-security-checklist.md` | 打包/组件/存储/网络/加密的检查清单 |
-| `references/frida-cookbook.md` | 常用 Hook 脚本（Java/native/网络/加密） |
-| `references/frida-bypass-kit.md` | 反调试/反 root/SSL pinning 绕过合集 |
-| `references/android-advanced.md` | 加固、动态加载、JNI、脱壳等进阶主题 |
+| `references/apk-security-checklist.md` | OWASP MASTG 静态/动态/存储/网络/加密检查清单 |
+| `references/frida-cookbook.md` | 常用 Hook 脚本（Java/Native/OkHttp/加密参数捕获） |
+| `references/frida-bypass-kit.md` | 反调试 / 反 Root / SSL Pinning / 模拟器绕过合集 |
+| `references/android-advanced.md` | 加固脱壳、JNI/Native、动态加载等进阶主题 |
+| `references/05-cross-platform-hybrid.md` | Flutter / React Native (Hermes) / UniApp / WebView JSBridge 专项 |
+| `references/06-privacy-sdk-checklist.md` | 合规隐私权限、第三方 SDK 风险与 FileProvider/PendingIntent 审计清单 |
+| `references/07-mobile-reporting-and-src.md` | 移动端报告写作、OWASP MASVS v2 映射、SRC/企业双口径与降噪标准 |
 
 ## 完成自检
 
-- [ ] 原始 APK 已哈希并 `record_fact` 登记
-- [ ] manifest/入口/导出组件已过一遍
-- [ ] 接口清单、签名算法、密钥位置已落 fact
-- [ ] 有设备则完成 Hook 验证；无设备则写明缺设备与替代验证
-- [ ] patch/Hook 的位置与目的写清楚（可复现）
+- [ ] 已运行 `mobile_decompile_audit` 并核对样本包名、SHA-256 与 `quality_status`
+- [ ] 已检查 Manifest/Plist、导出组件、签名方案、跨端容器与原生二进制 hardening
+- [ ] 接口清单、签名位置、硬编码凭据提示已落 `record_fact`
+- [ ] 有设备时已完成 CA/透明代理、Frida 绕过、UI 遍历截图与 IPC 探针；无设备时已写明边界
+- [ ] 每条拟上报发现已通过 `mobile_evidence_check`（`src_ready: true`）且凭据已脱敏

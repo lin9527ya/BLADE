@@ -860,9 +860,10 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.oastMint(), t.oastPoll(),
 		// 出口被 WAF 封禁时切换 Clash 节点（服务端验证新出口 IP，绝不直连）。
 		t.rotateEgressTool(),
-		// 移动 APP 测试工具组：仅绑定移动设备时由 server/assembly.go 动态放行。
+		// 移动 APP 测试工具组：仅绑定移动设备或上传移动样本时由 server/assembly.go 动态放行。
 		t.mobileDeviceStatus(), t.mobileAppCtrl(), t.mobileProxyCtrl(),
 		t.mobileUIExplore(), t.mobileFridaHook(), t.mobileRPCSign(), t.mobileIPCProbe(),
+		t.mobileDecompileAudit(), t.mobileEvidenceCheck(),
 		// 以下工具仍【不给】worker，只留给 planner/main（读上下文、跨 work 复盘是规划职责，
 		// worker 只做单条意图的执行与写回）：list_facts / list_companies / list_worker_traces。
 	}

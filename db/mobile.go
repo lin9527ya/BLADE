@@ -261,6 +261,24 @@ func (d *DB) TaskHasMobileDevice(taskID int64) bool {
 	return strings.TrimSpace(dev) != ""
 }
 
+// TaskHasMobileApp reports whether a task targets a mobile APP (app_mode=mobile, uploaded samples,
+// resolved package name, or bound mobile device).
+func (d *DB) TaskHasMobileApp(taskID int64) bool {
+	if d == nil || taskID <= 0 {
+		return false
+	}
+	var has bool
+	err := d.QueryRow(`
+SELECT (
+	COALESCE(app_mode,'standard') = 'mobile'
+	OR COALESCE(app_package_name,'') <> ''
+	OR jsonb_array_length(COALESCE(app_sample_paths,'[]'::jsonb)) > 0
+	OR COALESCE(mobile_device_id,'') <> ''
+)
+FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&has)
+	return err == nil && has
+}
+
 func normalizeMobileProxyMode(m string) string {
 	switch strings.ToLower(strings.TrimSpace(m)) {
 	case "lan", "none", "usb_reverse":

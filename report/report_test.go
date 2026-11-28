@@ -552,3 +552,48 @@ func TestMarkdownFootprintSources(t *testing.T) {
 		t.Fatalf("无来源时不该输出“来自”：\n%s", md2)
 	}
 }
+
+func TestMarkdownMobileProfileSection(t *testing.T) {
+	// Non-mobile report stays untouched
+	plain := Markdown(Input{Title: "web", Goal: "g", GeneratedAt: time.Unix(0, 0)})
+	if strings.Contains(plain, "## 移动应用测评基线") {
+		t.Fatalf("non-mobile report must not include mobile section:\n%s", plain)
+	}
+
+	// Mobile report renders baseline profile + OWASP MASVS v2 overview
+	mobMD := Markdown(Input{
+		Title:       "app",
+		Goal:        "g",
+		GeneratedAt: time.Unix(0, 0),
+		Mobile: &MobileReportProfile{
+			Platform:         "android",
+			PackageName:      "com.demo.pay",
+			VersionName:      "2.1.0",
+			VersionCode:      "210",
+			SampleSHA256:     "deadbeef01",
+			SamplePaths:      []string{"tasks/1/samples/app.apk"},
+			SignatureSchemes: []string{"v2", "v3"},
+			Frameworks:       []string{"React Native"},
+			Debuggable:       true,
+			BoundDeviceID:    "127.0.0.1:7555",
+			CandidateDomains: []string{"api.demo.pay"},
+			StaticFindings: []MobileStaticFindingSummary{
+				{ID: "manifest-debuggable", Severity: "high", Title: "android:debuggable=true", MASVS: "MASVS-CODE-1"},
+			},
+		},
+	})
+	for _, want := range []string{
+		"## 移动应用测评基线",
+		"com.demo.pay",
+		"deadbeef01",
+		"v2, v3",
+		"React Native",
+		"### OWASP MASVS v2 覆盖概览",
+		"MASVS-CODE",
+		"android:debuggable=true",
+	} {
+		if !strings.Contains(mobMD, want) {
+			t.Fatalf("mobile report missing %q:\n%s", want, mobMD)
+		}
+	}
+}

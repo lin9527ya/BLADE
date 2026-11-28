@@ -36,6 +36,7 @@ type Manager struct {
 	adbBin       string
 	adbSocket    string
 	runner       ADBRunner
+	iosRunner    ADBRunner
 	deviceLocks  map[string]int64  // serial -> taskID (exclusive reservation)
 	origProxy    map[string]string // serial -> previous global http_proxy
 	activeProxy  map[string]string // serial -> mode (usb_reverse | lan)
@@ -218,6 +219,7 @@ func (m *Manager) ListDevices(ctx context.Context, pemCACert []byte) ([]DeviceIn
 		}
 		devices = append(devices, dev)
 	}
+	devices = append(devices, m.discoverIOSDevices(ctx)...)
 	sort.Slice(devices, func(i, j int) bool { return devices[i].Serial < devices[j].Serial })
 	return devices, nil
 }

@@ -261,13 +261,16 @@ transparent_ready:19901
 		t.Fatalf("ClearProxy failed: %v", err)
 	}
 
-	// Check Frida catalog contains upgraded Flutter + Native + Storage/FlagSecure modules.
+	// Check Frida catalog contains upgraded Flutter + Native + Storage/FlagSecure + iOS modules.
 	cat := FridaCatalog()
 	var modIDs []string
 	for _, m := range cat {
 		modIDs = append(modIDs, m.ID)
 	}
-	for _, reqMod := range []string{"flutter_ssl_bypass", "native_tls_hook", "storage_crypto_audit", "flag_secure_bypass", "socket_traffic_tap"} {
+	for _, reqMod := range []string{
+		"flutter_ssl_bypass", "native_tls_hook", "storage_crypto_audit", "flag_secure_bypass", "socket_traffic_tap",
+		"ios_ssl_bypass", "ios_jailbreak_bypass", "ios_crypto_monitor", "ios_keychain_dump",
+	} {
 		if !slices.Contains(modIDs, reqMod) {
 			t.Fatalf("missing Frida catalog module %q", reqMod)
 		}

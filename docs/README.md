@@ -89,6 +89,7 @@ CAS 防重与水位语义、create/start/pause/resume 动作、固定时区墙�
 ## 移动 APP 安全测试
 
 使用与架构总览：`docs/移动APP安全测试使用与架构说明.md`（Android/iOS 上传与原生 SAST/ELF/Mach-O/Hermes 画像、USB `adb reverse` / LAN 鉴权代理 / Root `iptables` 透明代理、10 套 Frida 模板与 `http_request` RPC 自动签名联动、IPC Fuzz / UI 状态机爬虫 / Root 沙箱与 Logcat 审计）。
+全流程调研与实现蓝图：`docs/APP渗透全流程调研与实现方案-2026-11-28.md`（对标最新版 `Pojun` 文档体例与架构特性，覆盖 Android / iOS / 跨平台混合 / 双身份 API 主战场的 10 阶段闭环方法论、MASVS/SRC 证据与驳回防错、BLADE `file:line` 断层勘察及 P0/P1/P2 工程落地方案）。
 实现入口：`mobile/`（解包、SAST、设备与 Frida/审计控制）、`traffic/mobile_*.go`（`MobileProxy`、`MobileTransparentBridge`、CA 分发与 `mobile_hook` 合成流记录）、`db/mobile.go`、`toolpolicy/toolpolicy.go`（`task_mobile_device` 门控）、`agent/mobile.go` / `agent/tools_http.go`、`server/app_upload.go` / `server/mobile_api.go`。
 
 ## 开发与排障

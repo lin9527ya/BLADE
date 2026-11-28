@@ -15,6 +15,7 @@ import (
 
 type hostToolProbe struct {
 	Name     string
+	AltNames []string
 	Args     []string
 	Required bool
 	Purpose  string
@@ -37,7 +38,7 @@ var hostToolCatalog = []hostToolProbe{
 	{Name: "java", Args: []string{"-version"}, Purpose: "jadx / apktool / apksigner"},
 	{Name: "jadx", Args: []string{"--version"}, Purpose: "APK 反编译"},
 	{Name: "apktool", Args: []string{"--version"}, Purpose: "APK 解包/重打包"},
-	{Name: "aapt2", Args: []string{"version"}, Purpose: "Android 资源/Manifest 解析"},
+	{Name: "aapt2", AltNames: []string{"aapt"}, Args: []string{"version"}, Purpose: "Android 资源/Manifest 解析"},
 	{Name: "apksigner", Args: []string{"version"}, Purpose: "APK 签名验证与重签名"},
 	{Name: "zipalign", Args: []string{"-h"}, Purpose: "APK 安装包字节对齐"},
 	{Name: "adb", Args: []string{"version"}, Purpose: "Android 真机/模拟器"},
@@ -62,8 +63,16 @@ type hostToolStatus struct {
 
 func probeHostTool(ctx context.Context, t hostToolProbe) hostToolStatus {
 	out := hostToolStatus{Name: t.Name, Required: t.Required, Purpose: t.Purpose}
-	path, err := exec.LookPath(t.Name)
-	if err != nil {
+	candidates := append([]string{t.Name}, t.AltNames...)
+	var path, matched string
+	for _, cand := range candidates {
+		if p, err := exec.LookPath(cand); err == nil {
+			path = p
+			matched = cand
+			break
+		}
+	}
+	if path == "" {
 		out.Error = "未安装"
 		return out
 	}
@@ -78,6 +87,9 @@ func probeHostTool(ctx context.Context, t hostToolProbe) hostToolStatus {
 		line = line[:i]
 	}
 	out.Version = strings.TrimSpace(line)
+	if matched != t.Name && out.Version != "" {
+		out.Version = matched + ": " + out.Version
+	}
 	if err != nil && out.Version == "" {
 		out.Version = "已安装（版本命令返回非零）"
 	}

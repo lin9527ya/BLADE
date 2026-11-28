@@ -122,6 +122,38 @@ type Input struct {
 	// 它跟 Credentials 是两个方向：Credentials 说"拿到了什么"，这里说"动过谁"。
 	// 交付物里后者同样要交代——客户复盘时最想知道的就是自己的账号有没有被反复试过。
 	CredentialAttempts []db.CredentialAttempt
+	// Mobile 为移动应用专项测评基线（非移动任务为 nil，报告输出完全保持原样）。
+	Mobile *MobileReportProfile
+}
+
+// MobileStaticFindingSummary 为报告摘要使用的静态检测条款精简视图。
+type MobileStaticFindingSummary struct {
+	ID       string
+	Rule     string
+	Severity string
+	Title    string
+	Location string
+	MASVS    string
+}
+
+// MobileReportProfile 汇总移动 APP 样本属性、设备基线与 OWASP MASVS v2 映射情况。
+type MobileReportProfile struct {
+	Platform         string
+	PackageName      string
+	VersionName      string
+	VersionCode      string
+	SampleSHA256     string
+	SamplePaths      []string
+	SignatureSchemes []string
+	Frameworks       []string
+	Packers          []string
+	Debuggable       bool
+	AllowBackup      bool
+	UsesCleartext    bool
+	BoundDeviceID    string
+	BoundDeviceModel string
+	CandidateDomains []string
+	StaticFindings   []MobileStaticFindingSummary
 }
 
 // detectionView 是检测验证节点渲染所需的最小字段集。
@@ -455,6 +487,106 @@ func writeLootMeta(b *strings.Builder, parts []string) {
 	}
 }
 
+func writeMobileProfileSection(b *strings.Builder, m *MobileReportProfile) {
+	if m == nil {
+		return
+	}
+	fmt.Fprintf(b, "## 移动应用测评基线\n\n")
+	if m.PackageName != "" || m.Platform != "" {
+		ver := strings.TrimSpace(m.VersionName)
+		if m.VersionCode != "" {
+			if ver != "" {
+				ver += " (" + m.VersionCode + ")"
+			} else {
+				ver = m.VersionCode
+			}
+		}
+		fmt.Fprintf(b, "- **应用标识**：`%s`（平台：%s%s）\n",
+			nz(m.PackageName, "未解析"),
+			nz(strings.ToUpper(m.Platform), "UNKNOWN"),
+			func() string {
+				if ver != "" {
+					return " · 版本 `" + ver + "`"
+				}
+				return ""
+			}())
+	}
+	if m.SampleSHA256 != "" {
+		fmt.Fprintf(b, "- **样本校验**：SHA-256 `%s`\n", m.SampleSHA256)
+	}
+	if len(m.SamplePaths) > 0 {
+		fmt.Fprintf(b, "- **样本路径**：`%s`\n", strings.Join(m.SamplePaths, "`, `"))
+	}
+	if len(m.SignatureSchemes) > 0 {
+		fmt.Fprintf(b, "- **签名方案**：%s\n", strings.Join(m.SignatureSchemes, ", "))
+	}
+	if len(m.Frameworks) > 0 {
+		fmt.Fprintf(b, "- **识别框架**：%s\n", strings.Join(m.Frameworks, ", "))
+	}
+	if len(m.Packers) > 0 {
+		fmt.Fprintf(b, "- **加固/壳特征**：%s\n", strings.Join(m.Packers, ", "))
+	}
+	fmt.Fprintf(b, "- **Manifest 安全属性**：debuggable=`%v` · allowBackup=`%v` · usesCleartextTraffic=`%v`\n",
+		m.Debuggable, m.AllowBackup, m.UsesCleartext)
+	if m.BoundDeviceID != "" {
+		fmt.Fprintf(b, "- **动态验证设备**：`%s`%s\n", m.BoundDeviceID, func() string {
+			if m.BoundDeviceModel != "" {
+				return "（" + m.BoundDeviceModel + "）"
+			}
+			return ""
+		}())
+	} else {
+		b.WriteString("- **动态验证设备**：未绑定（本次报告以静态反编译/白盒审计及后端接口验证为主）\n")
+	}
+	if len(m.CandidateDomains) > 0 {
+		limit := m.CandidateDomains
+		if len(limit) > 15 {
+			limit = limit[:15]
+		}
+		fmt.Fprintf(b, "- **候选后端域名/资产（%d 项）**：`%s`\n", len(m.CandidateDomains), strings.Join(limit, "`, `"))
+	}
+
+	// OWASP MASVS v2 7 大验证域基线映射概览
+	masvsHits := map[string][]string{}
+	for _, f := range m.StaticFindings {
+		cat := strings.TrimSpace(f.MASVS)
+		if cat == "" {
+			cat = "MASVS-ARCH"
+		}
+		key := strings.SplitN(cat, "-", 3)[0]
+		if parts := strings.SplitN(cat, "-", 3); len(parts) >= 2 {
+			key = parts[0] + "-" + parts[1]
+		}
+		label := fmt.Sprintf("[%s] %s", nz(f.Severity, "info"), nz(f.Title, f.Rule))
+		masvsHits[key] = append(masvsHits[key], label)
+	}
+	domains := []struct {
+		ID   string
+		Name string
+	}{
+		{"MASVS-STORAGE", "本地存储与凭据安全"},
+		{"MASVS-CRYPTO", "密码学与密钥管理"},
+		{"MASVS-AUTH", "身份认证与会话控制"},
+		{"MASVS-NETWORK", "网络传输与证书校验"},
+		{"MASVS-PLATFORM", "平台组件（IPC/WebView/DeepLink）"},
+		{"MASVS-CODE", "代码质量与原生安全配置"},
+		{"MASVS-RESILIENCE", "逆向对抗与完整性防护"},
+	}
+	b.WriteString("\n### OWASP MASVS v2 覆盖概览\n\n| 验证域 | 说明 | 静态命中/风险点 |\n|---|---|---|\n")
+	for _, d := range domains {
+		hits := masvsHits[d.ID]
+		summary := "已核验（静态阶段未触发预设风险特征）"
+		if len(hits) > 0 {
+			if len(hits) > 3 {
+				hits = append(hits[:3], fmt.Sprintf("…共 %d 项", len(masvsHits[d.ID])))
+			}
+			summary = strings.Join(hits, "；")
+		}
+		fmt.Fprintf(b, "| %s | %s | %s |\n", d.ID, d.Name, summary)
+	}
+	b.WriteString("\n")
+}
+
 // Markdown renders the report.
 func Markdown(in Input) string {
 	var b strings.Builder
@@ -503,6 +635,10 @@ func Markdown(in Input) string {
 		fmt.Fprintf(&b, "%s %d", t, in.AssetCounts[t])
 	}
 	b.WriteString("\n\n")
+
+	if in.Mobile != nil {
+		writeMobileProfileSection(&b, in.Mobile)
+	}
 
 	// 目标达成情况：交付物必须如实写清 met/unmet/abandoned，不能因为报告生成成功
 	// 就暗示任务完成。没有 goal 节点时保留旧行为，不伪造进度。
