@@ -158,6 +158,9 @@ func (s *Server) wsRead(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "非法路径")
 		return
 	}
+	if !s.allowMobileWorkspaceRead(w, r, abs) {
+		return
+	}
 	fi, err := os.Stat(abs)
 	if err != nil {
 		writeErr(w, 404, "文件不存在")
@@ -291,6 +294,9 @@ func (s *Server) wsDownload(w http.ResponseWriter, r *http.Request) {
 	abs, ok := s.wsResolve(r.URL.Query().Get("path"))
 	if !ok {
 		writeErr(w, 400, "非法路径")
+		return
+	}
+	if !s.allowMobileWorkspaceRead(w, r, abs) {
 		return
 	}
 	fi, err := os.Stat(abs)

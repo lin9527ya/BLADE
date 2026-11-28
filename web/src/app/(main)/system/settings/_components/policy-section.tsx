@@ -4,7 +4,15 @@ import * as React from "react";
 
 import Link from "next/link";
 
-import { EyeOffIcon, KeyRoundIcon, LanguagesIcon, OctagonXIcon, RadarIcon, ScanSearchIcon, ShieldAlertIcon } from "lucide-react";
+import {
+  EyeOffIcon,
+  KeyRoundIcon,
+  LanguagesIcon,
+  OctagonXIcon,
+  RadarIcon,
+  ScanSearchIcon,
+  ShieldAlertIcon,
+} from "lucide-react";
 
 import { Advanced, Field, Section, SubBlock, SwitchRow } from "@/components/page-sections";
 import { Badge } from "@/components/ui/badge";
@@ -545,8 +553,7 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
             <>
               默认开启。每收到一条新的 high/critical 发现，平台会给该任务的 planner 投一条<strong>非强制提示</strong>
               ：评估这个发现能否推进到影响面（利用、提权、横向、读取数据）。
-              <br />
-              它<strong>不会创建意图、不会设完成门、不会限制队列</strong>——派不派下一跳仍由 planner
+              <br />它<strong>不会创建意图、不会设完成门、不会限制队列</strong>——派不派下一跳仍由 planner
               按黑板自由决定。已有意图覆盖或只是版本线索时，提示会明确要求不要重复探测。
             </>
           }
@@ -571,8 +578,8 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
               置信度、复测复现/已修复）但仍无详细报告的漏洞，会交给
               <code>reporter</code> agent 按证据补写。
               <br />
-              每条漏洞最多尝试 2 次、间隔至少 30 分钟，失败不会热循环；证据不足时 reporter
-              只说明缺口，不臆造。前提是 <code>reporter</code> agent 处于启用状态。
+              每条漏洞最多尝试 2 次、间隔至少 30 分钟，失败不会热循环；证据不足时 reporter 只说明缺口，不臆造。前提是{" "}
+              <code>reporter</code> agent 处于启用状态。
             </>
           }
         />
@@ -596,6 +603,7 @@ export function PolicySection({ s }: { s: ReturnType<typeof useSettingsState> })
               查看并手工验证。关闭后恢复原行为：只下发 sha256 指纹，明文仅在节点详情点「显示明文」时
               由受控接口返回，并写入任务时间线。
               <br />
+              移动工作台按本开关提供手工源文件核验。关闭后仅显示脱敏摘要和来源位置。
               报告/交付物仍按原口径只印身份与指纹；导出战果台账时，开启本项会把 secret 一并写入
               CSV/JSON。请只在受控环境使用。
             </>

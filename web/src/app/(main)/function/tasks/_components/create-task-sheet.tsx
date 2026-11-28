@@ -40,7 +40,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { formatSampleBytes, parseCandidateDomainInput } from "@/lib/mobile-utils";
+import { formatSampleBytes, parseCandidateDomainInput, sampleReceiptText } from "@/lib/mobile-utils";
 import type {
   AssetInterceptRuleInput,
   Company,
@@ -250,8 +250,8 @@ export function CreateTaskSheet({
       const path = res.primary?.sample_path;
       if (path) setAppSamplePaths((prev) => [...new Set([...prev, path])]);
       const man = res.samples?.[0]?.manifest;
+      setAppManifest(man ?? null);
       if (man) {
-        setAppManifest(man);
         if (!name.trim() && (man.app_name || man.package_name)) {
           setName(`${man.app_name || man.package_name} 安全测试`);
         }
@@ -264,7 +264,9 @@ export function CreateTaskSheet({
           setAppExtraHostsInput((prev) => (prev.trim() ? prev : (man.candidate_domains ?? []).slice(0, 6).join(", ")));
         }
       }
-      toast.success(`已完成上传与预解析：${file.name}`);
+      if (res.primary.inspection === "failed" || res.primary.inspection === "partial")
+        toast.warning(sampleReceiptText(res.primary));
+      else toast.success(sampleReceiptText(res.primary));
     } catch (e) {
       toast.error(`安装包上传失败：${(e as Error).message}`);
     } finally {
@@ -325,7 +327,7 @@ export function CreateTaskSheet({
       }
       const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
       const heartbeatSec = Math.max(10, Math.floor(Number(heartbeatMin) || 10)) * 60; // 下限 10min，与后端归一一致
-      await api.createTask({
+      const created = await api.createTask({
         name: name.trim(),
         categoryId: categoryID,
         description: description.trim(),
@@ -350,7 +352,13 @@ export function CreateTaskSheet({
           .map((r) => ({ ...r, pattern: r.pattern.trim() }))
           .filter((r) => r.pattern !== ""),
       });
-      toast.success("任务已创建");
+      const problems =
+        created.mobile_sample_results?.filter(
+          (x) => x.registration === "failed" || x.inspection === "failed" || x.inspection === "partial",
+        ) ?? [];
+      if (problems.length)
+        toast.warning("任务已创建：" + problems.map((x) => x.name + " · " + sampleReceiptText(x)).join("；"));
+      else toast.success("任务已创建");
       setName("");
       setCategoryID(undefined);
       setDescription("");

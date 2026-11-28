@@ -753,8 +753,9 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[task] 新建任务 #%s «%s» 目标: %s", t.ID, req.Description, req.Goal)
+	var sampleResults []appUploadResult
 	if appMode == "mobile" {
-		s.prepareTaskMobileSamples(t, req.AppSamplePaths, req.AppExtraHosts)
+		sampleResults = s.prepareTaskMobileSamples(t, req.AppSamplePaths, req.AppExtraHosts)
 		if serial := strings.TrimPrefix(strings.TrimSpace(req.MobileDeviceID), "adb:"); serial != "" {
 			if tid, perr := strconv.ParseInt(t.ID, 10, 64); perr == nil && tid > 0 {
 				if err := s.m.Mobile().BindTask(tid, serial); err == nil {
@@ -776,7 +777,9 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	// 共享的建后流程(seed + 种子意图 + 后台目标分解 + engine.Run),与 spawn_task 复用同一段。
 	// launchTask 内部异步,不阻塞 UI —— 目标分解在后台可见地进行。
 	s.launchTask(t, req.Description+" "+req.Goal, seedFirstIntent != nil && *seedFirstIntent)
-	writeJSON(w, 201, taskDTO(t, s.resolvedTaskStatus(t)))
+	dto := taskDTO(t, s.resolvedTaskStatus(t))
+	dto.MobileSampleResults = sampleResults
+	writeJSON(w, 201, dto)
 }
 
 func (s *Server) validateTaskProfileIDs(ids []int64) error {

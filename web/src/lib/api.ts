@@ -20,6 +20,7 @@ import type {
   AgentDetail,
   AgentTrigger,
   APIToken,
+  AppUploadItem,
   AppUploadResp,
   ArchiveBatchItem,
   Asset,
@@ -143,6 +144,7 @@ import type {
   MobileIPCProbeResult,
   MobileLogcatAuditReport,
   MobilePackageMetadata,
+  MobileReportHistory,
   MobileSandboxEntry,
   MobileSetupInfo,
   MobileStorageAuditReport,
@@ -3049,12 +3051,20 @@ export const api = {
       xhr.send(fd);
     });
   },
-  mobileDevices: () => get<{ devices: MobileDevice[]; adb_warning?: string }>(`/mobile/devices`),
+  mobileDevices: () => get<{ devices: MobileDevice[]; adb_warning?: string; ios_warning?: string }>(`/mobile/devices`),
   connectMobileDevice: (input: { endpoint?: string; pair_endpoint?: string; pair_code?: string }) =>
     post<{ ok: boolean; message: string }>(`/mobile/devices/connect`, input),
   deleteMobileDevice: (serial: string) => del<{ ok: boolean }>(`/mobile/devices/${encodeURIComponent(serial)}`),
   fridaScripts: () => get<{ scripts: FridaScriptSpec[] }>(`/mobile/frida/scripts`).then((r) => arr(r.scripts)),
-  taskMobileState: (taskId: string) => get<TaskMobileState>(`/tasks/${encodeURIComponent(taskId)}/mobile/state`),
+  taskMobileState: (taskId: string, omitReport = false) =>
+    get<TaskMobileState>(`/tasks/${encodeURIComponent(taskId)}/mobile/state${omitReport ? "?omit_report=1" : ""}`),
+  mobileReports: (taskId: string, sample: string, run: string, signal: AbortSignal) =>
+    get<MobileReportHistory>(
+      `/tasks/${encodeURIComponent(taskId)}/mobile/reports?${new URLSearchParams({ sample_path: sample, run_id: run })}`,
+      { signal, cache: "no-store" },
+    ),
+  retryMobileRegistration: (taskId: string, path: string) =>
+    post<AppUploadItem>(`/tasks/${encodeURIComponent(taskId)}/mobile/samples/register`, { sample_path: path }),
   bindTaskMobileDevice: (taskId: string, serial: string, proxyMode = "usb_reverse") =>
     post<{ ok: boolean; mobile_device_id: string; proxy_mode: string }>(
       `/tasks/${encodeURIComponent(taskId)}/mobile/bind`,
@@ -3068,15 +3078,16 @@ export const api = {
     post<{ ok: boolean; message: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/ca-push`, {}),
   toggleTaskMobileProxy: (taskId: string, action: "enable_usb" | "enable_transparent" | "enable_lan" | "disable") =>
     post<{ ok: boolean; message: string }>(`/tasks/${encodeURIComponent(taskId)}/mobile/proxy`, { action }),
-  runTaskMobileStaticAudit: (taskId: string, samplePath = "") =>
+  runTaskMobileStaticAudit: (taskId: string, samplePath = "", appid?: string) =>
     post<{ ok: boolean; manifest: MobilePackageMetadata }>(`/tasks/${encodeURIComponent(taskId)}/mobile/static-audit`, {
       sample_path: samplePath,
+      appid,
     }),
   runTaskMobileDecompileAudit: (
     taskId: string,
     opts?: { sample_path?: string; appid?: string; mode?: "auto" | "fast" | "deep"; skip_apktool?: boolean },
   ) =>
-    post<{ ok: boolean; audit: DecompileAuditReport }>(
+    post<{ ok: boolean; audit: DecompileAuditReport; warning?: string }>(
       `/tasks/${encodeURIComponent(taskId)}/mobile/decompile-audit`,
       opts ?? {},
     ),

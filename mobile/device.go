@@ -165,8 +165,19 @@ func AndroidCertHash(pemBytes []byte) (string, *x509.Certificate, error) {
 // ListDevices discovers currently connected ADB devices and enriches online devices with
 // device properties, root capability, system CA install state, Frida status, and task lock.
 func (m *Manager) ListDevices(ctx context.Context, pemCACert []byte) ([]DeviceInfo, error) {
+	devices, adbErr, _ := m.DeviceInventory(ctx, pemCACert)
+	return devices, adbErr
+}
+func (m *Manager) DeviceInventory(ctx context.Context, pemCACert []byte) ([]DeviceInfo, error, error) {
+	devices, adbErr := m.listAndroidDevices(ctx, pemCACert)
+	apple, iosErr := m.discoverIOSDevices(ctx)
+	devices = append(devices, apple...)
+	sort.Slice(devices, func(i, j int) bool { return devices[i].Serial < devices[j].Serial })
+	return devices, adbErr, iosErr
+}
+func (m *Manager) listAndroidDevices(ctx context.Context, pemCACert []byte) ([]DeviceInfo, error) {
 	out, stderr, code, err := m.runADB(ctx, "devices", "-l")
-	if err != nil && code == -1 {
+	if err != nil || code != 0 {
 		return nil, fmt.Errorf("adb unavailable (%v): %s", err, strings.TrimSpace(stderr))
 	}
 	lines := strings.Split(out, "\n")
@@ -219,8 +230,7 @@ func (m *Manager) ListDevices(ctx context.Context, pemCACert []byte) ([]DeviceIn
 		}
 		devices = append(devices, dev)
 	}
-	devices = append(devices, m.discoverIOSDevices(ctx)...)
-	sort.Slice(devices, func(i, j int) bool { return devices[i].Serial < devices[j].Serial })
+
 	return devices, nil
 }
 

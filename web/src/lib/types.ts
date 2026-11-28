@@ -60,6 +60,7 @@ export interface Task {
   app_mode?: "standard" | "mobile";
   app_platform?: string;
   app_package_name?: string;
+  mobile_sample_results?: AppUploadItem[];
   app_sample_paths?: string[];
   app_manifest_json?: MobilePackageMetadata;
   mobile_device_id?: string;
@@ -4077,7 +4078,15 @@ export interface MobileStaticFinding {
   recommendation?: string;
 }
 
+export interface MobileInspectionStage {
+  name: string;
+  status: string;
+  checked: number;
+  total: number;
+  note?: string;
+}
 export interface MobilePackageMetadata {
+  checks?: MobileInspectionStage[];
   sample_name: string;
   sample_path?: string;
   sha256: string;
@@ -4126,6 +4135,8 @@ export interface MiniAppSummary {
   container_type?: string;
   encryption_detected?: boolean;
   package_count?: number;
+  parsed_packages?: number;
+  skipped_packages?: number;
   file_count?: number;
   routes?: string[];
   sub_packages?: string[];
@@ -4138,6 +4149,11 @@ export interface MiniAppSummary {
 }
 
 export interface AppUploadItem {
+  upload?: string;
+  inspection?: string;
+  registration?: string;
+  message?: string;
+  appid?: string;
   sample_path: string;
   name: string;
   size_bytes: number;
@@ -4361,7 +4377,34 @@ export interface DecompiledSignCandidate {
   snippet: string;
 }
 
+export interface MobileReportSummary {
+  run_id: string;
+  sample_path: string;
+  sample_sha256: string;
+  quality_status: string;
+  generated_at: string;
+}
+export interface MobileReportHistory {
+  history: MobileReportSummary[];
+  audit: DecompileAuditReport | null;
+  receipt: AppUploadItem | null;
+  manual_source_review: boolean;
+}
 export interface DecompileAuditReport {
+  manifest_meta?: MobilePackageMetadata;
+  warnings?: string[];
+  extract?: {
+    extracted_files: number;
+    skipped_files: number;
+    warnings?: string[];
+    packages_seen?: number;
+    packages_read?: number;
+  };
+  run_id?: string;
+  checks?: MobileInspectionStage[];
+  scan_limited?: boolean;
+  skipped_large_files?: number;
+  unreadable_files?: number;
   package_name?: string;
   platform?: string;
   sample_path: string;
@@ -4380,6 +4423,8 @@ export interface DecompileAuditReport {
 }
 
 export interface TaskMobileState {
+  pending_samples?: AppUploadItem[];
+  manual_source_review?: boolean;
   task_id: string;
   app_mode: string;
   app_platform?: string;

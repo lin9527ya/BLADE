@@ -41,8 +41,9 @@ type Server struct {
 	// concMu serializes concurrency-cap decisions (admission + reconcile) so a
 	// scheduler tick and an HTTP settings change / task creation can't both count
 	// free slots off the same snapshot and over-promote past the limit.
-	concMu      sync.Mutex
-	workspaceMu sync.Mutex // serializes file-manager version checks and commits
+	concMu         sync.Mutex
+	mobileSampleMu sync.Mutex
+	workspaceMu    sync.Mutex // serializes file-manager version checks and commits
 
 	// 下面按域聚成子结构（P2 第二步）。放在子结构里而不是平铺在 Server 上，
 	// 是为了让每个域的状态与它自己的锁待在一起——此前 10 个 mutex 混在 37 个字段里，
@@ -263,6 +264,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		taskLive:     newLiveHub[TaskLiveEvent](),
 		approvalLive: newLiveHub[ApprovalLiveEvent](),
 	}
+	s.protectOldMobileExports()
 	s.imSvc = newIMService(s)
 	// 预算耗尽 → 暂停任务（落库、取消主 Agent、并发对账），而不是终止任务出终局报告。
 	// 用户继续后同一档预算不再打断；具体见 server/budget.go 的 pauseForBudget。

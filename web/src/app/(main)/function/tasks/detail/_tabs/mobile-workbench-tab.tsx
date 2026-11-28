@@ -28,20 +28,28 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Textarea } from "@/components/ui/textarea";
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
-import { deviceCapabilitySummary, formatSampleBytes, uiElementDisplayLabel } from "@/lib/mobile-utils";
+import {
+  deviceCapabilitySummary,
+  formatSampleBytes,
+  sampleReceiptText,
+  uiElementDisplayLabel,
+} from "@/lib/mobile-utils";
 import type {
-  DecompileAuditReport,
+  AppUploadItem,
   FridaScriptSpec,
   MobileDevice,
   MobileIPCFuzzReport,
   MobileIPCProbeResult,
   MobileLogcatAuditReport,
+  MobileReportHistory,
   MobileSandboxEntry,
   MobileStorageAuditReport,
   MobileUICrawlResult,
   MobileUIElement,
   TaskMobileState,
 } from "@/lib/types";
+
+import { MobileChecks, MobileSourceReview } from "./_components/mobile-report-details";
 
 function staticSeverityVariant(sev: string): "destructive" | "default" | "outline" {
   if (sev === "high") return "destructive";
@@ -99,7 +107,34 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
   const [ipcFuzz, setIPCFuzz] = React.useState<MobileIPCFuzzReport | null>(null);
 
   // Sandbox browser, storage & logcat audits
-  const [decompileAudit, setDecompileAudit] = React.useState<DecompileAuditReport | null>(null);
+  const [sampleChoice, setSampleChoice] = React.useState(""),
+    [runChoice, setRunChoice] = React.useState(""),
+    [reloadRuns, setReloadRuns] = React.useState(0);
+  const [lastUpload, setLastUpload] = React.useState<AppUploadItem | null>(null);
+  const [readResult, setReadResult] = React.useState<{ key: string; value?: MobileReportHistory; error?: string }>();
+  const sample = (state?.app_sample_paths ?? []).includes(sampleChoice)
+    ? sampleChoice
+    : (state?.app_sample_paths?.[0] ?? "");
+  const reportKey = JSON.stringify([taskId, sample, runChoice, reloadRuns, state?.manual_source_review]);
+  React.useEffect(() => {
+    if (!sample) return;
+    const ctl = new AbortController();
+    api
+      .mobileReports(taskId, sample, runChoice, ctl.signal)
+      .then((value) => {
+        if (!ctl.signal.aborted) setReadResult({ key: reportKey, value });
+      })
+      .catch((e) => {
+        if (!ctl.signal.aborted) setReadResult({ key: reportKey, error: e.message });
+      });
+    return () => ctl.abort();
+  }, [taskId, sample, runChoice, reportKey]);
+  const review = readResult?.key === reportKey ? readResult.value : undefined;
+  const reportError = readResult?.key === reportKey ? readResult.error : undefined;
+  const manualReview = !!state?.manual_source_review && !!review?.manual_source_review;
+  const reviewNotice = manualReview
+    ? "凭据明文保真已开启，可按来源文件手工核验。"
+    : "当前会话仅显示脱敏摘要和来源位置。";
   const [accountLabel, setAccountLabel] = React.useState("user_a");
   const [sandboxPath, setSandboxPath] = React.useState("");
   const [sandboxEntries, setSandboxEntries] = React.useState<MobileSandboxEntry[]>([]);
@@ -110,13 +145,17 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
   const refreshState = React.useCallback(async () => {
     try {
       const [st, devRes, sc] = await Promise.all([
-        api.taskMobileState(taskId),
-        api.mobileDevices().catch(() => ({ devices: [] as MobileDevice[], adb_warning: "" })),
+        api.taskMobileState(taskId, true),
+        api.mobileDevices().catch(() => ({
+          devices: [] as MobileDevice[],
+          adb_warning: "设备列表读取失败，设备状态未知",
+          ios_warning: "",
+        })),
         api.fridaScripts().catch(() => []),
       ]);
       setState(st);
       setDevices(devRes.devices ?? []);
-      setAdbWarn(devRes.adb_warning ?? "");
+      setAdbWarn([devRes.adb_warning, devRes.ios_warning].filter(Boolean).join(" · "));
       setScripts(sc);
       if (st.mobile_device_id) {
         setSelectedSerial(st.mobile_device_id);
@@ -140,7 +179,7 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
 
   usePolling(
     async (alive) => {
-      const st = await api.taskMobileState(taskId);
+      const st = await api.taskMobileState(taskId, true);
       if (alive()) setState(st);
     },
     8000,
@@ -164,8 +203,14 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
     if (!file) return;
     setUploadPct(0);
     try {
-      await api.uploadAppPackage("task", taskId, file, (pct) => setUploadPct(pct), hintAppID);
-      toast.success(`已上传并解析样本：${file.name}`);
+      const res = await api.uploadAppPackage("task", taskId, file, (pct) => setUploadPct(pct), hintAppID);
+      setLastUpload(res.primary);
+      setSampleChoice(res.primary.sample_path);
+      setRunChoice("");
+      setReloadRuns((n) => n + 1);
+      if (res.primary.registration === "failed" || res.primary.inspection !== "complete")
+        toast.warning(sampleReceiptText(res.primary));
+      else toast.success(sampleReceiptText(res.primary));
       await refreshState();
     } catch (e) {
       toast.error(`上传应用包失败：${(e as Error).message}`);
@@ -216,10 +261,17 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
     }
   }
 
-  const manifest = state?.manifest;
-  const activeAudit = decompileAudit ?? state?.decompile_audit ?? null;
+  const activeAudit = review?.audit;
+  const latestManifest =
+    review?.receipt?.manifest ?? (sample === state?.app_sample_paths?.[0] ? state?.manifest : undefined);
+  const manifest = runChoice
+    ? (activeAudit?.manifest_meta ?? latestManifest)
+    : (latestManifest ?? activeAudit?.manifest_meta);
   const bound = state?.bound_device;
   const scopeSet = new Set((state?.scope_hosts ?? []).map((h) => h.toLowerCase()));
+  const displayedCheckedDomains = (manifest?.candidate_domains ?? []).filter(
+    (domain) => checkedDomains.includes(domain) && !scopeSet.has(domain.toLowerCase()),
+  );
 
   if (loading && !state) {
     return <div className="py-12 text-center text-muted-foreground text-sm">正在加载移动端工作台…</div>;
@@ -249,16 +301,17 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                 onChange={(e) => setHintAppID(e.target.value)}
                 className="h-8 w-28 font-mono text-xs"
               />
-              {manifest && state?.app_sample_paths?.length ? (
+              {sample ? (
                 <>
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={busy !== ""}
+                    disabled={busy !== "" || uploadPct !== null}
                     onClick={() =>
                       void runAction("SAST 复检", async () => {
-                        await api.runTaskMobileStaticAudit(taskId);
-                        toast.success("已完成深度静态 SAST/二进制安全体检");
+                        await api.runTaskMobileStaticAudit(taskId, sample, hintAppID.trim() || undefined);
+                        setReloadRuns((n) => n + 1);
+                        toast.success("样本信息已刷新");
                       })
                     }
                   >
@@ -267,21 +320,29 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={busy !== ""}
+                    disabled={
+                      busy !== "" ||
+                      uploadPct !== null ||
+                      !!manifest?.checks?.some((c) => c.name === "split_base_manifest")
+                    }
                     onClick={() =>
                       void runAction("反编译白盒审计", async () => {
                         const r = await api.runTaskMobileDecompileAudit(taskId, {
+                          sample_path: sample,
                           mode: "auto",
                           appid: hintAppID.trim() || undefined,
                         });
-                        setDecompileAudit(r.audit);
-                        toast.success(
-                          `解包白盒审计完成（quality=${r.audit.quality_status}，端点=${r.audit.endpoints?.length ?? 0}）`,
-                        );
+                        setRunChoice(r.audit.run_id ?? "");
+                        setReloadRuns((n) => n + 1);
+                        if (r.warning) {
+                          toast.warning(r.warning);
+                        } else {
+                          toast.success(`报告已保存（${r.audit.quality_status}）`);
+                        }
                       })
                     }
                   >
-                    {manifest.platform === "miniapp" ? "小程序解包审计" : "反编译白盒审计"}
+                    {manifest?.platform === "miniapp" ? "小程序解包审计" : "反编译白盒审计"}
                   </Button>
                 </>
               ) : null}
@@ -295,7 +356,7 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
               <Button
                 size="sm"
                 variant="outline"
-                disabled={uploadPct !== null}
+                disabled={!!busy || uploadPct !== null}
                 onClick={() => sampleInputRef.current?.click()}
               >
                 <UploadIcon className="size-3.5" />
@@ -304,6 +365,125 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
             </div>
           </CardHeader>
           <CardContent className="grid gap-3 text-sm">
+            {lastUpload && (
+              <div role="status" className="mb-2 text-xs">
+                {lastUpload.name} · {sampleReceiptText(lastUpload)}{" "}
+                {lastUpload.registration === "failed" && (
+                  <Button
+                    size="sm"
+                    disabled={!!busy}
+                    onClick={() =>
+                      runAction("登记样本", async () => {
+                        const receipt = await api.retryMobileRegistration(taskId, lastUpload.sample_path);
+                        setLastUpload(receipt);
+                        setSampleChoice(receipt.sample_path);
+                        setRunChoice("");
+                        setReloadRuns((n) => n + 1);
+                      })
+                    }
+                  >
+                    重试登记
+                  </Button>
+                )}
+              </div>
+            )}
+            {state?.pending_samples
+              ?.filter((r) => r.sample_path !== lastUpload?.sample_path)
+              .map((r) => (
+                <div key={r.sample_path} className="text-xs">
+                  {r.name} · {sampleReceiptText(r)}{" "}
+                  <Button
+                    size="sm"
+                    disabled={!!busy}
+                    onClick={() =>
+                      runAction("登记样本", async () => {
+                        setLastUpload(await api.retryMobileRegistration(taskId, r.sample_path));
+                        setSampleChoice(r.sample_path);
+                        setRunChoice("");
+                        setReloadRuns((n) => n + 1);
+                      })
+                    }
+                  >
+                    重试登记
+                  </Button>
+                </div>
+              ))}
+            {!!state?.app_sample_paths?.length && (
+              <div className="mb-3 flex flex-wrap gap-2 text-xs">
+                <label>
+                  当前样本{" "}
+                  <select
+                    disabled={!!busy || uploadPct !== null}
+                    value={sample}
+                    onChange={(e) => {
+                      setSampleChoice(e.target.value);
+                      setHintAppID("");
+                      setRunChoice("");
+                    }}
+                  >
+                    {state.app_sample_paths.map((p) => (
+                      <option key={p} value={p}>
+                        {p.split("/").pop()}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  报告版本{" "}
+                  <select
+                    disabled={!!busy || uploadPct !== null}
+                    value={runChoice}
+                    onChange={(e) => setRunChoice(e.target.value)}
+                  >
+                    <option value="">最近一次</option>
+                    {review?.history?.map((h) => (
+                      <option key={h.run_id} value={h.run_id}>
+                        {h.generated_at} · {h.run_id === "legacy" ? "历史报告" : h.run_id.slice(-8)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button type="button" onClick={() => setReloadRuns((n) => n + 1)}>
+                  刷新报告
+                </button>
+              </div>
+            )}
+            {reportError && (
+              <p role="alert" className="text-sm">
+                {reportError}
+              </p>
+            )}
+            {review?.receipt && <p className="text-xs">{sampleReceiptText(review.receipt)}</p>}
+            {review && !activeAudit && <p className="text-muted-foreground text-xs">该样本暂无已完成的报告</p>}
+            <MobileChecks checks={activeAudit?.checks ?? manifest?.checks} />
+            {!!activeAudit?.extract?.warnings?.length && (
+              <details className="text-xs">
+                <summary>解包提示（{activeAudit.extract.warnings.length}）</summary>
+                {Array.from(new Set(activeAudit.extract.warnings)).map((w) => (
+                  <p key={w}>{w}</p>
+                ))}
+              </details>
+            )}
+            {!!activeAudit?.warnings?.length && (
+              <details className="text-xs">
+                <summary>本次报告提示</summary>
+                {Array.from(new Set(activeAudit.warnings)).map((w) => (
+                  <p key={w}>{w}</p>
+                ))}
+              </details>
+            )}
+            {activeAudit && (
+              <p className="break-all font-mono text-xs">SHA-256 · {activeAudit.sample_sha256 ?? "未知"}</p>
+            )}
+            {activeAudit && (
+              <p className="text-muted-foreground text-xs">
+                {activeAudit.run_id === "legacy" ? "旧版报告共用源码目录，仅提供脱敏摘要和来源位置。" : reviewNotice}
+              </p>
+            )}
+            {activeAudit && manualReview && (
+              <MobileSourceReview key={activeAudit.run_id} taskId={taskId} report={activeAudit} />
+            )}
+
             {manifest ? (
               <>
                 <div className="flex flex-wrap items-center gap-2">
@@ -497,10 +677,10 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                       <span className="font-medium text-xs">静态提取后端候选域名</span>
                       <Button
                         size="xs"
-                        disabled={checkedDomains.length === 0 || busy !== ""}
+                        disabled={displayedCheckedDomains.length === 0 || busy !== ""}
                         onClick={() =>
                           void runAction("纳入授权范围", async () => {
-                            const r = await api.approveTaskMobileScope(taskId, checkedDomains);
+                            const r = await api.approveTaskMobileScope(taskId, displayedCheckedDomains);
                             toast.success(`已将 ${r.added} 个域名纳入任务授权范围`);
                           })
                         }

@@ -96,6 +96,7 @@ type StaticFinding struct {
 
 // PackageMetadata holds static inspection metadata extracted from APK/AAB/XAPK/IPA files.
 type PackageMetadata struct {
+	Checks               []InspectionStage      `json:"checks,omitempty"`
 	SampleName           string                 `json:"sample_name"`
 	SamplePath           string                 `json:"sample_path,omitempty"`
 	SHA256               string                 `json:"sha256"`
@@ -141,6 +142,8 @@ type PackageMetadata struct {
 
 // MiniAppSummary captures metadata specific to WeChat/Mini-Program packages (.wxapkg / .zip).
 type MiniAppSummary struct {
+	ParsedPackages     int      `json:"parsed_packages"`
+	SkippedPackages    int      `json:"skipped_packages"`
 	AppID              string   `json:"appid,omitempty"`
 	ContainerType      string   `json:"container_type,omitempty"` // plain | v1mmwx | mac_legacy | zip_bundle
 	EncryptionDetected bool     `json:"encryption_detected,omitempty"`

@@ -40,16 +40,17 @@ func rawString(raw json.RawMessage) string {
 
 // ---- Task (frontend "Task") ---- created_at as RFC3339, plus a derived status.
 type TaskDTO struct {
-	ID            string `json:"id"`
-	ExplorationID int64  `json:"exploration_id"`
-	Name          string `json:"name"`             // 可选任务名称;空=未命名
-	Remark        string `json:"remark,omitempty"` // 任务备注（≤2000 字）
-	CategoryID    *int64 `json:"category_id,omitempty"`
-	CategoryName  string `json:"category_name,omitempty"`
-	Pinned        bool   `json:"pinned"`
-	PinnedAt      string `json:"pinned_at,omitempty"`
-	Description   string `json:"description"`
-	Goal          string `json:"goal"`
+	MobileSampleResults []appUploadResult `json:"mobile_sample_results,omitempty"`
+	ID                  string            `json:"id"`
+	ExplorationID       int64             `json:"exploration_id"`
+	Name                string            `json:"name"`             // 可选任务名称;空=未命名
+	Remark              string            `json:"remark,omitempty"` // 任务备注（≤2000 字）
+	CategoryID          *int64            `json:"category_id,omitempty"`
+	CategoryName        string            `json:"category_name,omitempty"`
+	Pinned              bool              `json:"pinned"`
+	PinnedAt            string            `json:"pinned_at,omitempty"`
+	Description         string            `json:"description"`
+	Goal                string            `json:"goal"`
 	// Status 是**推导后**的状态（不是库里的 status 列）：created | queued | running |
 	// paused | done | failed | timeout | policy_blocked。queued 在库里不存在，由
 	// resolvedTaskStatus 从 queued 布尔列 + 引擎状态合成——这里写清楚，免得前端与

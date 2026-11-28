@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,10 +22,16 @@ import (
 const maxAppUpload = 1024 << 20 // 1024 MiB
 
 type appUploadResult struct {
-	SamplePath string                  `json:"sample_path"`
-	Name       string                  `json:"name"`
-	SizeBytes  int64                   `json:"size_bytes"`
-	Manifest   *mobile.PackageMetadata `json:"manifest,omitempty"`
+	SHA256       string                  `json:"sha256,omitempty"`
+	Upload       string                  `json:"upload"`
+	Inspection   string                  `json:"inspection"`
+	Registration string                  `json:"registration"`
+	Message      string                  `json:"message,omitempty"`
+	AppID        string                  `json:"appid,omitempty"`
+	SamplePath   string                  `json:"sample_path"`
+	Name         string                  `json:"name"`
+	SizeBytes    int64                   `json:"size_bytes"`
+	Manifest     *mobile.PackageMetadata `json:"manifest,omitempty"`
 }
 
 // appUpload streams a multipart uploaded mobile sample directly to disk (up to 1024 MiB)
@@ -52,7 +59,7 @@ func (s *Server) appUpload(w http.ResponseWriter, r *http.Request) {
 		sub = "drafts"
 	case "task":
 		sub = "tasks"
-		if s.m.ResolveTask(id) == nil {
+		if _, exists := s.m.Task(id); !exists {
 			writeErr(w, 404, "task not found")
 			return
 		}
@@ -67,8 +74,8 @@ func (s *Server) appUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dir := filepath.Join(s.m.dir, sub, id, "samples")
-	if err := os.MkdirAll(dir, 0o775); err != nil {
+	dir, err := ensureMobileDir(s.m.dir, sub, id, "samples")
+	if err != nil {
 		writeErr(w, 500, "建目录失败: "+err.Error())
 		return
 	}
@@ -82,6 +89,16 @@ func (s *Server) appUpload(w http.ResponseWriter, r *http.Request) {
 
 	hintAppID := strings.TrimSpace(r.URL.Query().Get("appid"))
 	var uploaded []appUploadResult
+	var staged []string
+	keep := false
+	defer func() {
+		if !keep {
+			for _, path := range staged {
+				_ = os.Remove(path)
+				_ = os.Remove(mobileReceiptFile(path))
+			}
+		}
+	}()
 	for {
 		part, err := mr.NextPart()
 		if err == io.EOF {
@@ -111,19 +128,20 @@ func (s *Server) appUpload(w http.ResponseWriter, r *http.Request) {
 		case ".apk", ".aab", ".xapk", ".apkm", ".apks", ".ipa", ".wxapkg", ".zip":
 		default:
 			_ = part.Close()
-			writeErr(w, 400, fmt.Sprintf("不支持的应用包格式 %q（支持 .apk / .aab / .xapk / .ipa / .wxapkg / .zip）", ext))
+			writeErr(w, 400, fmt.Sprintf("不支持的应用包格式 %q（支持 .apk / .aab / .xapk / .apkm / .apks / .ipa / .wxapkg / .zip）", ext))
 			return
 		}
 
-		dst := uniqueUploadPath(dir, name)
-		f, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		dst, f, err := reserveMobileSample(dir, name)
 		if err != nil {
 			_ = part.Close()
 			writeErr(w, 500, "落盘失败: "+err.Error())
 			return
 		}
 
-		written, copyErr := io.Copy(f, part)
+		staged = append(staged, dst)
+		digest := sha256.New()
+		written, copyErr := io.Copy(io.MultiWriter(f, digest), part)
 		closeErr := f.Close()
 		_ = part.Close()
 		if copyErr != nil {
@@ -159,18 +177,8 @@ func (s *Server) appUpload(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		meta, iErr := mobile.InspectPackageWithHint(dst, hintAppID)
-		if iErr != nil {
-			log.Printf("[app-upload] inspect warning for %s: %v", name, iErr)
-		}
 		rel, _ := filepath.Rel(s.m.dir, dst)
-		rel = filepath.ToSlash(rel)
-		uploaded = append(uploaded, appUploadResult{
-			SamplePath: rel,
-			Name:       name,
-			SizeBytes:  written,
-			Manifest:   meta,
-		})
+		uploaded = append(uploaded, appUploadResult{SamplePath: filepath.ToSlash(rel), SizeBytes: written, SHA256: fmt.Sprintf("%x", digest.Sum(nil))})
 	}
 
 	if len(uploaded) == 0 {
@@ -178,128 +186,160 @@ func (s *Server) appUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If uploaded directly to a live task, append sample paths and refresh task metadata.
-	if taskID > 0 {
-		s.adoptUploadedToTask(taskID, uploaded)
+	for i, item := range uploaded {
+		uploaded[i] = inspectUploadedSample(staged[i], item.SamplePath, hintAppID, item.SizeBytes)
+		if item.SHA256 != "" {
+			uploaded[i].SHA256 = item.SHA256
+		}
+		if err = saveMobileReceipt(staged[i], uploaded[i]); err != nil {
+			writeErr(w, 500, "保存上传回执失败，请重新上传")
+			return
+		}
 	}
-
-	writeJSON(w, 200, map[string]any{
+	keep = true
+	status := 200
+	if taskID > 0 {
+		if err := s.adoptUploadedToTask(taskID, uploaded); err != nil {
+			status = http.StatusMultiStatus
+			for i := range uploaded {
+				uploaded[i].Registration = "failed"
+				_ = saveMobileReceipt(staged[i], uploaded[i])
+			}
+		} else {
+			for i := range uploaded {
+				uploaded[i].Registration = "registered"
+			}
+		}
+	}
+	writeJSON(w, status, map[string]any{
 		"samples": uploaded,
 		"primary": uploaded[0],
 	})
 }
 
-func (s *Server) adoptUploadedToTask(taskID int64, items []appUploadResult) {
-	cfg, _ := s.m.pg.TaskMobileInfo(taskID)
-	paths := append([]string(nil), cfg.AppSamplePaths...)
-	var primaryMeta *mobile.PackageMetadata
-	if len(cfg.AppManifestJSON) > 2 {
-		var m mobile.PackageMetadata
-		if json.Unmarshal(cfg.AppManifestJSON, &m) == nil && m.PackageName != "" {
-			primaryMeta = &m
-		}
+func (s *Server) adoptUploadedToTask(taskID int64, items []appUploadResult) error {
+	if len(items) == 0 {
+		return nil
 	}
+	s.mobileSampleMu.Lock()
+	defer s.mobileSampleMu.Unlock()
+	paths := make([]string, 0, len(items))
 	for _, it := range items {
-		paths = appendUniqueStr(paths, it.SamplePath)
-		if primaryMeta == nil && it.Manifest != nil {
-			primaryMeta = it.Manifest
+		paths = append(paths, it.SamplePath)
+	}
+	cfg, err := s.m.pg.AppendTaskMobileSamples(taskID, s.m.dir, paths, items[0].Manifest)
+	if err != nil {
+		return err
+	}
+	if t, ok := s.m.Task(strconv.FormatInt(taskID, 10)); ok {
+		t.updateLifecycle(func(st *taskLifecycleState) {
+			st.AppMode = "mobile"
+			st.AppSamplePaths = cfg.AppSamplePaths
+			st.AppPlatform = cfg.AppPlatform
+			st.AppPackageName = cfg.AppPackageName
+			st.AppManifestJSON = cfg.AppManifestJSON
+		})
+	}
+	for _, item := range items {
+		item.Registration = "registered"
+		if err := saveMobileReceipt(filepath.Join(s.m.dir, filepath.FromSlash(item.SamplePath)), item); err != nil {
+			// The committed DB entry is authoritative when serving the receipt.
+			log.Printf("[mobile] 任务 %d 已登记，回执状态同步失败: %v", taskID, err)
 		}
 	}
-	var rawMan json.RawMessage
-	platform, pkg := cfg.AppPlatform, cfg.AppPackageName
-	if primaryMeta != nil {
-		rawMan, _ = json.Marshal(primaryMeta)
-		if platform == "" {
-			platform = string(primaryMeta.Platform)
-		}
-		if pkg == "" {
-			pkg = primaryMeta.PackageName
-		}
-	}
-	if err := s.m.pg.UpdateTaskAppMetadata(taskID, paths, rawMan, platform, pkg); err == nil {
-		if t, ok := s.m.Task(strconv.FormatInt(taskID, 10)); ok && t != nil {
-			t.updateLifecycle(func(st *taskLifecycleState) {
-				st.AppMode = "mobile"
-				st.AppPlatform = platform
-				st.AppPackageName = pkg
-				st.AppSamplePaths = paths
-				st.AppManifestJSON = rawMan
-			})
-		}
-	}
+	return nil
 }
 
 // prepareTaskMobileSamples adopts staged draft sample paths into tasks/<taskID>/samples/,
 // inspects the primary package, and seeds assets + approved domains + origin facts.
-func (s *Server) prepareTaskMobileSamples(t *Task, draftPaths, extraHosts []string) {
+func (s *Server) prepareTaskMobileSamples(t *Task, draftPaths, extraHosts []string) []appUploadResult {
 	if t == nil {
-		return
+		return nil
 	}
 	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
 	if taskID <= 0 {
-		return
+		return nil
 	}
-	taskSamplesDir := filepath.Join(s.m.dir, "tasks", t.ID, "samples")
-	var adopted []string
+	base, _ := filepath.Abs(s.m.dir)
+	dstDir := filepath.Join(base, "tasks", t.ID, "samples")
+	var results, valid []appUploadResult
 	var primaryMeta *mobile.PackageMetadata
-
-	baseAbs, _ := filepath.Abs(s.m.dir)
-	for _, rel := range draftPaths {
-		rel = strings.TrimSpace(filepath.ToSlash(rel))
-		if rel == "" {
+	var removeAfterCommit []string
+	for _, path := range draftPaths {
+		abs := path
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(base, filepath.FromSlash(path))
+		}
+		rel, e := filepath.Rel(base, abs)
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		fail := appUploadResult{Name: filepath.Base(path), Upload: "unknown", Inspection: "unknown", Registration: "failed", Message: "草稿样本不可用，请重新上传"}
+		if e != nil || len(parts) != 4 || parts[2] != "samples" || !(parts[0] == "drafts" && safeChatID.MatchString(parts[1]) || parts[0] == "tasks" && parts[1] == t.ID) {
+			results = append(results, fail)
 			continue
 		}
-		srcAbs := rel
-		if !filepath.IsAbs(srcAbs) {
-			srcAbs = filepath.Join(s.m.dir, filepath.FromSlash(rel))
-		}
-		srcAbs, err := filepath.Abs(srcAbs)
-		if err != nil || !strings.HasPrefix(srcAbs, baseAbs+string(filepath.Separator)) {
+		real, e := s.realMobileWorkspaceRel(abs)
+		fi, statErr := os.Stat(abs)
+		if e != nil || real != filepath.ToSlash(rel) || statErr != nil || !fi.Mode().IsRegular() {
+			results = append(results, fail)
 			continue
 		}
-		// Restrict adoption to drafts/<id>/samples/ or this task's own samples/.
-		if !strings.Contains(filepath.ToSlash(srcAbs), "/samples/") {
+		prev, e := readMobileReceipt(abs)
+		if e != nil && !os.IsNotExist(e) {
+			results = append(results, fail)
 			continue
 		}
-		if _, err := os.Stat(srcAbs); err != nil {
+		if _, e = ensureMobileDir(base, "tasks", t.ID, "samples"); e != nil {
+			results = append(results, fail)
 			continue
 		}
-		_ = os.MkdirAll(taskSamplesDir, 0o775)
-		dstAbs := uniqueUploadPath(taskSamplesDir, filepath.Base(srcAbs))
-		if err := moveOrCopyFile(srcAbs, dstAbs); err != nil {
-			log.Printf("[mobile] adopt sample %s failed: %v", srcAbs, err)
-			continue
-		}
-		dstRel, _ := filepath.Rel(s.m.dir, dstAbs)
-		dstRel = filepath.ToSlash(dstRel)
-		adopted = appendUniqueStr(adopted, dstRel)
-		if primaryMeta == nil {
-			if m, err := mobile.InspectPackage(dstAbs); err == nil {
-				m.SamplePath = dstRel
-				primaryMeta = m
+		dst := abs
+		if parts[0] == "drafts" {
+			dst, e = copyMobileSample(abs, dstDir)
+			if e != nil {
+				results = append(results, fail)
+				continue
 			}
 		}
-	}
-
-	var manRaw json.RawMessage
-	platform, pkg := "", ""
-	if primaryMeta != nil {
-		manRaw, _ = json.Marshal(primaryMeta)
-		platform = string(primaryMeta.Platform)
-		pkg = primaryMeta.PackageName
-	}
-	if len(adopted) > 0 || len(manRaw) > 0 {
-		if err := s.m.pg.UpdateTaskAppMetadata(taskID, adopted, manRaw, platform, pkg); err == nil {
-			t.updateLifecycle(func(st *taskLifecycleState) {
-				st.AppMode = "mobile"
-				st.AppPlatform = platform
-				st.AppPackageName = pkg
-				st.AppSamplePaths = adopted
-				st.AppManifestJSON = manRaw
-			})
+		destRel, _ := filepath.Rel(base, dst)
+		item := inspectUploadedSample(dst, destRel, prev.AppID, fi.Size())
+		if prev.SHA256 != "" && prev.SHA256 != item.SHA256 {
+			if dst != abs {
+				_ = os.Remove(dst)
+			}
+			fail.Message = "草稿样本与上传时的摘要不匹配，请重新上传"
+			results = append(results, fail)
+			continue
+		}
+		if e = saveMobileReceipt(dst, item); e != nil {
+			if dst != abs {
+				_ = os.Remove(dst)
+			}
+			results = append(results, fail)
+			continue
+		}
+		if dst != abs {
+			removeAfterCommit = append(removeAfterCommit, abs)
+		}
+		item.Registration = "registered"
+		results = append(results, item)
+		valid = append(valid, item)
+		if len(valid) == 1 {
+			primaryMeta = item.Manifest
 		}
 	}
-
+	if err := s.adoptUploadedToTask(taskID, valid); err != nil {
+		for i := range results {
+			results[i].Registration = "failed"
+			if results[i].Upload == "stored" {
+				_ = saveMobileReceipt(filepath.Join(base, results[i].SamplePath), results[i])
+			}
+		}
+		return results
+	}
+	for _, src := range removeAfterCommit {
+		_ = os.Remove(src)
+		_ = os.Remove(mobileReceiptFile(src))
+	}
 	// Register APP asset + explicit target hosts into asset graph and task_scope.
 	as := s.m.Assets()
 	beginFact, _ := t.Store.OriginFactID()
@@ -357,6 +397,7 @@ func (s *Server) prepareTaskMobileSamples(t *Task, draftPaths, extraHosts []stri
 
 	// Emit a structured mobile static summary fact right under origin so Planner sees it cleanly.
 	if primaryMeta != nil && t.Store != nil {
+		manRaw, _ := json.Marshal(primaryMeta)
 		highCount, medCount := 0, 0
 		var topTitles []string
 		for _, sf := range primaryMeta.StaticFindings {
@@ -391,6 +432,7 @@ func (s *Server) prepareTaskMobileSamples(t *Task, draftPaths, extraHosts []stri
 			}, 0, "confirmed", "system", nil, beginFact, db.RelYields)
 		}
 	}
+	return results
 }
 
 func hasZIPMagic(path string) bool {
@@ -404,32 +446,42 @@ func hasZIPMagic(path string) bool {
 	return err == nil && n >= 2 && buf[0] == 'P' && buf[1] == 'K'
 }
 
-func moveOrCopyFile(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
-		return nil
+func reserveMobileSample(dir, name string) (string, *os.File, error) {
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 0; ; i++ {
+		candidate := name
+		if i > 0 {
+			candidate = fmt.Sprintf("%s-%d%s", stem, i, ext)
+		}
+		path := filepath.Join(dir, candidate)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if !os.IsExist(err) {
+			return path, f, err
+		}
 	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
+}
+func copyMobileSample(src, dir string) (string, error) {
+	in, e := os.Open(src)
+	if e != nil {
+		return "", e
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
+	path, out, e := reserveMobileSample(dir, filepath.Base(src))
+	if e != nil {
+		return "", e
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		_ = os.Remove(dst)
-		return err
+	_, e = io.Copy(out, in)
+	ce := out.Close()
+	if e == nil {
+		e = ce
 	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(dst)
-		return err
+	if e != nil {
+		_ = os.Remove(path)
+		return "", e
 	}
-	_ = os.Remove(src)
-	return nil
+	return path, nil
 }
-
 func appendUniqueStr(ss []string, v string) []string {
 	if v == "" {
 		return ss

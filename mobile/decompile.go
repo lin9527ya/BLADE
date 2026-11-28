@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ArchiveExtractLimits bounds safe extraction against Zip-Slip and Zip Bomb packages.
@@ -36,6 +38,10 @@ func defaultArchiveLimits() ArchiveExtractLimits {
 
 // ArchiveExtractReport records extracted entry counts and skipped entries.
 type ArchiveExtractReport struct {
+	ResourcesSeen  int      `json:"resources_seen,omitempty"`
+	ResourcesRead  int      `json:"resources_read,omitempty"`
+	PackagesRead   int      `json:"packages_read,omitempty"`
+	PackagesSeen   int      `json:"packages_seen,omitempty"`
 	ExtractedFiles int      `json:"extracted_files"`
 	SkippedFiles   int      `json:"skipped_files"`
 	TotalBytes     int64    `json:"total_bytes"`
@@ -92,25 +98,30 @@ type DecompiledSignCandidate struct {
 
 // DecompileAuditReport captures full extraction, decompiler quality gate, and directory whitebox results.
 type DecompileAuditReport struct {
-	PackageName    string                    `json:"package_name,omitempty"`
-	Platform       Platform                  `json:"platform,omitempty"`
-	SamplePath     string                    `json:"sample_path"`
-	SampleSHA256   string                    `json:"sample_sha256,omitempty"`
-	QualityStatus  string                    `json:"quality_status"` // full | partial_packed | raw_only
-	ToolsUsed      []string                  `json:"tools_used,omitempty"`
-	DecompiledDir  string                    `json:"decompiled_dir"`
-	AuditDir       string                    `json:"audit_dir"`
-	JavaFileCount  int                       `json:"java_file_count"`
-	SmaliFileCount int                       `json:"smali_file_count"`
-	ScannedFiles   int                       `json:"scanned_files"`
-	Extract        ArchiveExtractReport      `json:"extract"`
-	ManifestMeta   *PackageMetadata          `json:"manifest_meta,omitempty"`
-	Endpoints      []DecompiledEndpoint      `json:"endpoints,omitempty"`
-	Secrets        []DecompiledSecret        `json:"secrets,omitempty"`
-	SignCandidates []DecompiledSignCandidate `json:"sign_candidates,omitempty"`
-	Risks          []DecompiledCodeRisk      `json:"risks,omitempty"`
-	Warnings       []string                  `json:"warnings,omitempty"`
-	GeneratedAt    string                    `json:"generated_at"`
+	Checks            []InspectionStage         `json:"checks,omitempty"`
+	ScanLimited       bool                      `json:"scan_limited,omitempty"`
+	SkippedLargeFiles int                       `json:"skipped_large_files,omitempty"`
+	UnreadableFiles   int                       `json:"unreadable_files,omitempty"`
+	RunID             string                    `json:"run_id,omitempty"`
+	PackageName       string                    `json:"package_name,omitempty"`
+	Platform          Platform                  `json:"platform,omitempty"`
+	SamplePath        string                    `json:"sample_path"`
+	SampleSHA256      string                    `json:"sample_sha256,omitempty"`
+	QualityStatus     string                    `json:"quality_status"` // full | partial_packed | raw_only
+	ToolsUsed         []string                  `json:"tools_used,omitempty"`
+	DecompiledDir     string                    `json:"decompiled_dir"`
+	AuditDir          string                    `json:"audit_dir"`
+	JavaFileCount     int                       `json:"java_file_count"`
+	SmaliFileCount    int                       `json:"smali_file_count"`
+	ScannedFiles      int                       `json:"scanned_files"`
+	Extract           ArchiveExtractReport      `json:"extract"`
+	ManifestMeta      *PackageMetadata          `json:"manifest_meta,omitempty"`
+	Endpoints         []DecompiledEndpoint      `json:"endpoints,omitempty"`
+	Secrets           []DecompiledSecret        `json:"secrets,omitempty"`
+	SignCandidates    []DecompiledSignCandidate `json:"sign_candidates,omitempty"`
+	Risks             []DecompiledCodeRisk      `json:"risks,omitempty"`
+	Warnings          []string                  `json:"warnings,omitempty"`
+	GeneratedAt       string                    `json:"generated_at"`
 }
 
 var (
@@ -150,6 +161,15 @@ func SafeExtractMobileArchive(pkgPath, outDir string, limits ArchiveExtractLimit
 	defer zr.Close()
 
 	rep := &ArchiveExtractReport{}
+	isResource := func(name string) bool {
+		p := strings.TrimPrefix(strings.ToLower(filepath.ToSlash(name)), "base/")
+		return strings.HasPrefix(p, "res/") || strings.HasPrefix(p, "assets/")
+	}
+	for _, entry := range zr.File {
+		if !entry.FileInfo().IsDir() && isResource(entry.Name) {
+			rep.ResourcesSeen++
+		}
+	}
 	var nestedQueue []string
 	for _, f := range zr.File {
 		if rep.ExtractedFiles >= limits.MaxFiles {
@@ -207,6 +227,9 @@ func SafeExtractMobileArchive(pkgPath, outDir string, limits ArchiveExtractLimit
 			break
 		}
 		rep.TotalBytes += n
+		if isResource(f.Name) {
+			rep.ResourcesRead++
+		}
 		rep.ExtractedFiles++
 
 		if strings.HasSuffix(strings.ToLower(cleanRel), ".apk") {
@@ -234,6 +257,8 @@ func SafeExtractMobileArchive(pkgPath, outDir string, limits ArchiveExtractLimit
 			if subErr != nil {
 				return nil, subErr
 			}
+			rep.ResourcesRead += subRep.ResourcesRead
+			rep.ResourcesSeen += subRep.ResourcesSeen
 			rep.ExtractedFiles += subRep.ExtractedFiles
 			rep.SkippedFiles += subRep.SkippedFiles
 			rep.TotalBytes += subRep.TotalBytes
@@ -272,6 +297,9 @@ func safeArchiveEntryRel(raw string) (string, bool) {
 // strictly bounded inside taskRoot, runs directory-level whitebox SAST scanning, and persists audit artifacts
 // into <taskRoot>/mobile_audit/.
 func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts DecompileOptions) (*DecompileAuditReport, error) {
+	if e := ctx.Err(); e != nil {
+		return nil, e
+	}
 	absRoot, err := filepath.Abs(taskRoot)
 	if err != nil {
 		return nil, err
@@ -279,6 +307,18 @@ func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts Decom
 	absPkg, err := filepath.Abs(pkgPath)
 	if err != nil {
 		return nil, err
+	}
+	realRoot, e := filepath.EvalSymlinks(absRoot)
+	if e != nil {
+		return nil, e
+	}
+	realPkg, e := filepath.EvalSymlinks(absPkg)
+	if e != nil {
+		return nil, e
+	}
+	actualRel, e := filepath.Rel(realRoot, realPkg)
+	if e != nil || !filepath.IsLocal(actualRel) {
+		return nil, fmt.Errorf("样本不在任务工作区")
 	}
 	relPkg, err := filepath.Rel(absRoot, absPkg)
 	if err != nil || relPkg == ".." || strings.HasPrefix(relPkg, ".."+string(filepath.Separator)) || filepath.IsAbs(relPkg) {
@@ -297,16 +337,37 @@ func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts Decom
 		return nil, err
 	}
 
-	decompiledRoot := filepath.Join(absRoot, "samples", "decompiled")
+	// A completed run becomes visible in a single rename. Neither concurrent
+	// runs nor a failed retry can contribute files to another report.
+	runID := time.Now().UTC().Format("20060102T150405.000000000Z") + "-" + uuid.NewString()
+	relAudit := filepath.Join("mobile_audit", "runs", reportPathKey(relPkg), meta.SHA256, runID)
+	final := filepath.Join(absRoot, relAudit)
+	parent := filepath.Dir(final)
+	taskFS, e := os.OpenRoot(absRoot)
+	if e != nil {
+		return nil, e
+	}
+	defer taskFS.Close()
+	if err := taskFS.MkdirAll(filepath.Dir(relAudit), 0700); err != nil {
+		return nil, err
+	}
+	realParent, e := filepath.EvalSymlinks(parent)
+	if e != nil || realParent != filepath.Join(realRoot, filepath.Dir(relAudit)) {
+		return nil, fmt.Errorf("报告目录不属于任务")
+	}
+	work, err := os.MkdirTemp(parent, ".pending-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(work)
+	decompiledRoot := filepath.Join(work, "sources")
 	rawOut := filepath.Join(decompiledRoot, "raw")
 	jadxOut := filepath.Join(decompiledRoot, "jadx")
 	apktoolOut := filepath.Join(decompiledRoot, "apktool")
-	auditOut := filepath.Join(absRoot, "mobile_audit")
-	for _, d := range []string{decompiledRoot, rawOut, auditOut} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			return nil, err
-		}
+	if err := os.MkdirAll(rawOut, 0700); err != nil {
+		return nil, err
 	}
+	meta.SamplePath = filepath.ToSlash(relPkg)
 
 	var extRep *ArchiveExtractReport
 	if meta.Platform == PlatformMiniApp {
@@ -319,19 +380,17 @@ func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts Decom
 	}
 
 	rep := &DecompileAuditReport{
+		RunID:         runID,
 		PackageName:   meta.PackageName,
 		Platform:      meta.Platform,
 		SamplePath:    filepath.ToSlash(relPkg),
 		SampleSHA256:  meta.SHA256,
 		QualityStatus: "raw_only",
-		DecompiledDir: filepath.ToSlash(filepath.Join("samples", "decompiled")),
-		AuditDir:      "mobile_audit",
+		DecompiledDir: filepath.ToSlash(filepath.Join(relAudit, "sources")),
+		AuditDir:      filepath.ToSlash(relAudit),
 		Extract:       *extRep,
 		ManifestMeta:  meta,
-		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
-	}
-	if rawSHA, err := fileSHA256(absPkg); err == nil && rep.SampleSHA256 == "" {
-		rep.SampleSHA256 = rawSHA
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
 	if meta.Platform == PlatformAndroid || strings.HasSuffix(strings.ToLower(absPkg), ".apk") {
@@ -351,10 +410,10 @@ func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts Decom
 		if jadxBin, lerr := lookToolPath("jadx", opts.CommandRunner != nil); lerr == nil {
 			rep.ToolsUsed = append(rep.ToolsUsed, "jadx")
 			jCtx, cancel := context.WithTimeout(ctx, opts.JadxTimeout)
-			_, jErrOut, jCode, jErr := runner(jCtx, []string{"JAVA_OPTS=-Xmx2g"}, jadxBin, "-d", jadxOut, "--no-debug-info", "--show-bad-code", "-j", "2", apkTarget)
+			_, _, jCode, jErr := runner(jCtx, []string{"JAVA_OPTS=-Xmx2g"}, jadxBin, "-d", jadxOut, "--no-debug-info", "--show-bad-code", "-j", "2", apkTarget)
 			cancel()
 			if jErr != nil || jCode != 0 {
-				rep.Warnings = append(rep.Warnings, fmt.Sprintf("jadx exited with code %d (%s); evaluating partial output", jCode, clipDecompileMsg(jErrOut)))
+				rep.Warnings = append(rep.Warnings, fmt.Sprintf("jadx exited with code %d; evaluating partial output", jCode))
 			}
 		} else {
 			rep.Warnings = append(rep.Warnings, "jadx binary not available in PATH; running whitebox scan over safe-extracted DEX/XML/assets only")
@@ -364,10 +423,10 @@ func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts Decom
 			if apktoolBin, lerr := lookToolPath("apktool", opts.CommandRunner != nil); lerr == nil {
 				rep.ToolsUsed = append(rep.ToolsUsed, "apktool")
 				aCtx, cancel := context.WithTimeout(ctx, opts.JadxTimeout)
-				_, aErrOut, aCode, aErr := runner(aCtx, nil, apktoolBin, "d", "-f", "-o", apktoolOut, apkTarget)
+				_, _, aCode, aErr := runner(aCtx, nil, apktoolBin, "d", "-f", "-o", apktoolOut, apkTarget)
 				cancel()
 				if aErr != nil || aCode != 0 {
-					rep.Warnings = append(rep.Warnings, fmt.Sprintf("apktool exited with code %d (%s)", aCode, clipDecompileMsg(aErrOut)))
+					rep.Warnings = append(rep.Warnings, fmt.Sprintf("apktool exited with code %d", aCode))
 				}
 			}
 		}
@@ -380,23 +439,25 @@ func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts Decom
 			if hbcBin, lerr := lookToolPath("hbc-decompiler", opts.CommandRunner != nil); lerr == nil {
 				rep.ToolsUsed = append(rep.ToolsUsed, "hbc-decompiler")
 				hCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-				_, hErrOut, hCode, hErr := runner(hCtx, nil, hbcBin, bundlePath, filepath.Join(decompiledRoot, "hermes_dec.js"))
+				_, _, hCode, hErr := runner(hCtx, nil, hbcBin, bundlePath, filepath.Join(decompiledRoot, "hermes_dec.js"))
 				cancel()
 				if hErr != nil || hCode != 0 {
-					rep.Warnings = append(rep.Warnings, fmt.Sprintf("hbc-decompiler exited %d (%s)", hCode, clipDecompileMsg(hErrOut)))
+					rep.Warnings = append(rep.Warnings, fmt.Sprintf("hbc-decompiler exited %d", hCode))
 				}
 			}
 		}
 	}
 
-	if err := auditDecompiledDirectory(decompiledRoot, rep); err != nil {
+	if err := auditDecompiledDirectory(ctx, decompiledRoot, rep); err != nil {
 		return nil, err
 	}
 
 	// Output quality gate (never judge success solely by tool exit codes).
 	switch {
 	case meta.Platform == PlatformMiniApp:
-		if meta.MiniApp != nil && meta.MiniApp.EncryptionDetected && rep.Extract.ExtractedFiles == 0 {
+		if meta.MiniApp != nil && (meta.MiniApp.SkippedPackages > 0 || rep.Extract.PackagesRead < rep.Extract.PackagesSeen) {
+			rep.QualityStatus = "partial"
+		} else if meta.MiniApp != nil && meta.MiniApp.EncryptionDetected && rep.Extract.ExtractedFiles == 0 {
 			rep.QualityStatus = "partial_packed"
 			rep.Warnings = append(rep.Warnings, "小程序包存在加密且未能完整提取；请确认 AppID 或使用动态 Hook")
 		} else if meta.MiniApp != nil && meta.MiniApp.HasCompiledTpl {
@@ -409,6 +470,11 @@ func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts Decom
 		} else {
 			rep.QualityStatus = "raw_only"
 		}
+	case meta.Platform == PlatformIOS:
+		rep.QualityStatus = "metadata_only"
+		if meta.ReviewIncomplete() {
+			rep.QualityStatus = "partial"
+		}
 	case rep.JavaFileCount >= 10 || rep.SmaliFileCount >= 10:
 		rep.QualityStatus = "full"
 	case len(meta.Packers) > 0 && rep.JavaFileCount < 10:
@@ -420,7 +486,49 @@ func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts Decom
 		rep.QualityStatus = "raw_only"
 	}
 
-	if err := writeDecompileAuditArtifacts(auditOut, rep); err != nil {
+	rep.Checks = append(rep.Checks, meta.Checks...)
+	if meta.Platform == PlatformAndroid {
+		source := InspectionStage{Name: "source_output", Status: "not_produced", Checked: rep.JavaFileCount + rep.SmaliFileCount, Note: "Java/Smali 实际产出文件数"}
+		if source.Checked > 0 {
+			source.Status = "available"
+		} else if len(rep.ToolsUsed) == 0 {
+			source.Status = "tool_missing"
+		}
+		rep.Checks = append(rep.Checks, countedStage("android_resources", rep.Extract.ResourcesRead, rep.Extract.ResourcesSeen), source)
+	}
+	if rep.Extract.PackagesSeen > 0 {
+		rep.Checks = append(rep.Checks, countedStage("miniapp_extraction", rep.Extract.PackagesRead, rep.Extract.PackagesSeen))
+	}
+	scan := InspectionStage{Name: "file_review", Status: "complete", Checked: rep.ScannedFiles, Total: rep.ScannedFiles + rep.SkippedLargeFiles + rep.UnreadableFiles}
+	if rep.ScanLimited || rep.SkippedLargeFiles > 0 {
+		scan.Status = "limited"
+		scan.Note = "达到文件或字节上限，计数仅含已遍历部分"
+	} else if rep.UnreadableFiles > 0 {
+		scan.Status = "partial"
+	}
+	if scan.Total == 0 && !rep.ScanLimited {
+		scan.Status = "not_present"
+		scan.Note = "未发现适用的可检查文件"
+	}
+	rep.Checks = append(rep.Checks, scan)
+	if (scan.Status != "complete" || rep.Extract.SkippedFiles > 0 || len(rep.Extract.Warnings) > 0) && rep.QualityStatus == "full" {
+		rep.QualityStatus = "partial"
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if digest, err := SampleSHA256(absPkg); err != nil || digest != meta.SHA256 {
+		return nil, fmt.Errorf("样本已变更或无法读取，请重新选择")
+	}
+	rep.GeneratedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	rep.ProtectSharedReport()
+	if err := writeDecompileAuditArtifacts(work, rep); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(work, final); err != nil {
 		return nil, err
 	}
 	return rep, nil
@@ -434,14 +542,6 @@ func lookToolPath(name string, allowMock bool) (string, error) {
 		return name, nil
 	}
 	return "", exec.ErrNotFound
-}
-
-func clipDecompileMsg(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) > 160 {
-		return s[:160] + "..."
-	}
-	return s
 }
 
 func findExtractedFile(root string, names ...string) string {
@@ -526,6 +626,9 @@ func extractMiniAppSample(absPkg, rawOut string, summary *MiniAppSummary) (*Arch
 	}
 	ext := strings.ToLower(filepath.Ext(absPkg))
 	if ext != ".zip" {
+		if st, e := os.Stat(absPkg); e != nil || st.Size() > maxWxapkgRead {
+			return nil, fmt.Errorf("子包无法读取或超过大小上限")
+		}
 		raw, err := os.ReadFile(absPkg)
 		if err != nil {
 			return nil, err
@@ -533,8 +636,16 @@ func extractMiniAppSample(absPkg, rawOut string, summary *MiniAppSummary) (*Arch
 		rep, _, err := SafeExtractWxapkgData(raw, appID, rawOut, defaultArchiveLimits())
 		if err != nil {
 			// If encrypted with unknown AppID, return clean partial extraction report with warning
-			return &ArchiveExtractReport{Warnings: []string{err.Error()}}, nil
+			if e := os.RemoveAll(rawOut); e != nil {
+				return nil, e
+			}
+			if e := os.MkdirAll(rawOut, 0700); e != nil {
+				return nil, e
+			}
+			return &ArchiveExtractReport{PackagesSeen: 1, Warnings: []string{err.Error()}}, nil
 		}
+		rep.PackagesSeen = 1
+		rep.PackagesRead = 1
 		return rep, nil
 	}
 	zr, err := zip.OpenReader(absPkg)
@@ -544,23 +655,34 @@ func extractMiniAppSample(absPkg, rawOut string, summary *MiniAppSummary) (*Arch
 	defer zr.Close()
 	agg := &ArchiveExtractReport{}
 	for _, zf := range zr.File {
-		if !isSafeZipEntryName(zf.Name) || !strings.HasSuffix(strings.ToLower(zf.Name), ".wxapkg") {
+		if !strings.HasSuffix(strings.ToLower(zf.Name), ".wxapkg") {
+			continue
+		}
+		agg.PackagesSeen++
+		limits := defaultArchiveLimits()
+		limits.MaxFiles -= agg.ExtractedFiles
+		limits.MaxTotalBytes -= agg.TotalBytes
+		if !isSafeZipEntryName(zf.Name) || zf.UncompressedSize64 > maxWxapkgRead || limits.MaxFiles <= 0 || limits.MaxTotalBytes <= 0 {
+			agg.Warnings = appendUniqueCap(agg.Warnings, zf.Name+"：路径或读取限额不满足", 50)
 			continue
 		}
 		raw, rerr := readBoundedZipFile(zf, maxWxapkgRead)
 		if rerr != nil || len(raw) == 0 {
+			agg.Warnings = appendUniqueCap(agg.Warnings, zf.Name+"：子包不可读", 50)
 			continue
 		}
 		subID := appID
 		if subID == "" {
 			subID = ExtractWeChatAppID(zf.Name)
 		}
-		pkgSubDir := filepath.Join(rawOut, strings.TrimSuffix(filepath.Base(zf.Name), filepath.Ext(zf.Name)))
-		rep, _, derr := SafeExtractWxapkgData(raw, subID, pkgSubDir, defaultArchiveLimits())
+		pkgSubDir := filepath.Join(rawOut, fmt.Sprintf("package-%04d", agg.PackagesSeen))
+		rep, _, derr := SafeExtractWxapkgData(raw, subID, pkgSubDir, limits)
 		if derr != nil {
-			agg.Warnings = append(agg.Warnings, zf.Name+": "+derr.Error())
+			_ = os.RemoveAll(pkgSubDir)
+			agg.Warnings = appendUniqueCap(agg.Warnings, zf.Name+": "+derr.Error(), 50)
 			continue
 		}
+		agg.PackagesRead++
 		agg.ExtractedFiles += rep.ExtractedFiles
 		agg.SkippedFiles += rep.SkippedFiles
 		agg.TotalBytes += rep.TotalBytes
@@ -569,7 +691,7 @@ func extractMiniAppSample(absPkg, rawOut string, summary *MiniAppSummary) (*Arch
 	return agg, nil
 }
 
-func auditDecompiledDirectory(decompiledRoot string, rep *DecompileAuditReport) error {
+func auditDecompiledDirectory(ctx context.Context, decompiledRoot string, rep *DecompileAuditReport) error {
 	const (
 		maxScanFiles     = 5000
 		maxFileReadBytes = 256 << 10
@@ -586,7 +708,11 @@ func auditDecompiledDirectory(decompiledRoot string, rep *DecompileAuditReport) 
 	var totalBytes int64
 
 	err := filepath.WalkDir(decompiledRoot, func(p string, d fs.DirEntry, werr error) error {
+		if e := ctx.Err(); e != nil {
+			return e
+		}
 		if werr != nil {
+			rep.UnreadableFiles++
 			return nil
 		}
 		if d.IsDir() {
@@ -606,20 +732,33 @@ func auditDecompiledDirectory(decompiledRoot string, rep *DecompileAuditReport) 
 			return nil
 		}
 		if rep.ScannedFiles >= maxScanFiles || totalBytes >= maxTotalRead {
+			rep.ScanLimited = true
 			return fs.SkipAll
 		}
 		info, serr := d.Info()
-		if serr != nil || info.Size() == 0 || info.Size() > maxFileReadBytes {
+		if serr != nil {
+			rep.UnreadableFiles++
+			return nil
+		}
+		if info.Size() > maxFileReadBytes {
+			rep.SkippedLargeFiles++
+			return nil
+		}
+		if info.Size() == 0 {
 			return nil
 		}
 		rel, _ := filepath.Rel(decompiledRoot, p)
 		rel = filepath.ToSlash(rel)
 
+		if info.Size() > maxTotalRead-totalBytes {
+			rep.ScanLimited = true
+			return fs.SkipAll
+		}
 		f, err := os.Open(p)
 		if err != nil {
+			rep.UnreadableFiles++
 			return nil
 		}
-		rep.ScannedFiles++
 		totalBytes += info.Size()
 
 		sc := bufio.NewScanner(f)
@@ -707,6 +846,11 @@ func auditDecompiledDirectory(decompiledRoot string, rep *DecompileAuditReport) 
 				}
 			}
 		}
+		if sc.Err() != nil {
+			rep.UnreadableFiles++
+		} else {
+			rep.ScannedFiles++
+		}
 		_ = f.Close()
 		return nil
 	})
@@ -760,6 +904,7 @@ func shannonEntropy(s string) float64 {
 
 func writeDecompileAuditArtifacts(auditOut string, rep *DecompileAuditReport) error {
 	manifestRaw, err := json.MarshalIndent(map[string]any{
+		"run_id":           rep.RunID,
 		"package_name":     rep.PackageName,
 		"platform":         rep.Platform,
 		"sample_path":      rep.SamplePath,
@@ -778,7 +923,7 @@ func writeDecompileAuditArtifacts(auditOut string, rep *DecompileAuditReport) er
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(auditOut, "manifest.json"), manifestRaw, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(auditOut, "manifest.json"), manifestRaw, 0o600); err != nil {
 		return err
 	}
 
@@ -786,7 +931,7 @@ func writeDecompileAuditArtifacts(auditOut string, rep *DecompileAuditReport) er
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(auditOut, "report.json"), reportRaw, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(auditOut, "report.json"), reportRaw, 0o600); err != nil {
 		return err
 	}
 
@@ -798,7 +943,7 @@ func writeDecompileAuditArtifacts(auditOut string, rep *DecompileAuditReport) er
 			fmt.Fprintf(&epBuf, "%s  # %s:%d\n", ep.URL, ep.File, ep.Line)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(auditOut, "endpoints.txt"), []byte(epBuf.String()), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(auditOut, "endpoints.txt"), []byte(epBuf.String()), 0o600); err != nil {
 		return err
 	}
 
@@ -806,5 +951,5 @@ func writeDecompileAuditArtifacts(auditOut string, rep *DecompileAuditReport) er
 	for _, sec := range rep.Secrets {
 		fmt.Fprintf(&secBuf, "[%s] %s (entropy=%.2f)  # %s:%d\n", sec.Kind, sec.Masked, sec.Entropy, sec.File, sec.Line)
 	}
-	return os.WriteFile(filepath.Join(auditOut, "secrets.txt"), []byte(secBuf.String()), 0o644)
+	return os.WriteFile(filepath.Join(auditOut, "secrets.txt"), []byte(secBuf.String()), 0o600)
 }

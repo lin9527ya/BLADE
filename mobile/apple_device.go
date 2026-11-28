@@ -14,15 +14,15 @@ var reIOSUDID = regexp.MustCompile(`^[0-9A-Fa-f-]{20,64}$`)
 
 // DiscoverIOSDevices inspects USB-connected iOS devices via libimobiledevice (`idevice_id` & `ideviceinfo`).
 // Returns nil without error when libimobiledevice is absent or no iOS devices are attached.
-func (m *Manager) discoverIOSDevices(ctx context.Context) []DeviceInfo {
+func (m *Manager) discoverIOSDevices(ctx context.Context) ([]DeviceInfo, error) {
 	if m == nil {
-		return nil
+		return nil, fmt.Errorf("iOS 设备服务不可用")
 	}
 	runner := m.iosRunner
 	if runner == nil {
 		// Only auto-probe live USB iOS hardware when idevice_id exists and standard host runner is active.
 		if _, err := exec.LookPath("idevice_id"); err != nil {
-			return nil
+			return nil, fmt.Errorf("未安装 iOS 设备发现工具")
 		}
 		runner = defaultCommandRunner
 	}
@@ -31,7 +31,7 @@ func (m *Manager) discoverIOSDevices(ctx context.Context) []DeviceInfo {
 	defer cancel()
 	out, _, code, err := runner(subCtx, nil, "idevice_id", "-l")
 	if err != nil || code != 0 {
-		return nil
+		return nil, fmt.Errorf("iOS 设备列表读取失败")
 	}
 
 	var devices []DeviceInfo
@@ -66,7 +66,7 @@ func (m *Manager) discoverIOSDevices(ctx context.Context) []DeviceInfo {
 		}
 		devices = append(devices, dev)
 	}
-	return devices
+	return devices, nil
 }
 
 func parseIOSDeviceInfo(raw string, dev *DeviceInfo) {

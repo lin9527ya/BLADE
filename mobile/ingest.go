@@ -124,7 +124,7 @@ func InspectPackageWithHint(path, hintAppID string) (*PackageMetadata, error) {
 	if st.IsDir() {
 		return nil, fmt.Errorf("sample path is a directory")
 	}
-	sha, err := fileSHA256(path)
+	sha, err := SampleSHA256(path)
 	if err != nil {
 		return nil, err
 	}
@@ -205,6 +205,7 @@ func InspectPackageWithHint(path, hintAppID string) (*PackageMetadata, error) {
 func inspectAPKArchive(zr *zip.Reader, meta *PackageMetadata) error {
 	var manifestBytes []byte
 	var netSecBytes []byte
+	var resourceCount, resourceRead int
 	var codeBufs []NamedBuffer
 	for _, f := range zr.File {
 		if !isSafeZipEntryName(f.Name) {
@@ -221,7 +222,11 @@ func inspectAPKArchive(zr *zip.Reader, meta *PackageMetadata) error {
 				manifestBytes, _ = readBoundedZipFile(f, maxAXMLDecodeBytes)
 			}
 		case "res/xml/network_security_config.xml", "base/res/xml/network_security_config.xml":
+			resourceCount++
 			netSecBytes, _ = readBoundedZipFile(f, 512<<10)
+			if len(netSecBytes) > 0 && f.UncompressedSize64 <= 512<<10 {
+				resourceRead++
+			}
 		}
 		switch {
 		case strings.HasSuffix(lower, ".so") && strings.Contains(lower, "lib/"):
@@ -250,6 +255,7 @@ func inspectAPKArchive(zr *zip.Reader, meta *PackageMetadata) error {
 	if err := ParseAndroidManifest(manifestBytes, meta); err != nil {
 		return err
 	}
+	meta.Checks = append(meta.Checks, countedStage("android_manifest", 1, 1), countedStage("network_config", resourceRead, resourceCount))
 	if len(netSecBytes) > 0 {
 		inspectNetworkSecurityXML(netSecBytes, meta)
 	}
@@ -295,6 +301,9 @@ func inspectXAPKArchive(zr *zip.Reader, meta *PackageMetadata) error {
 }
 
 func mergeSubAPKMeta(dst, src *PackageMetadata) {
+	if len(dst.Checks) == 0 {
+		dst.Checks = append(dst.Checks, src.Checks...)
+	}
 	if dst.PackageName == "" {
 		dst.PackageName = src.PackageName
 		dst.AppName = src.AppName
@@ -349,6 +358,8 @@ func inspectIPAArchive(zr *zip.Reader, meta *PackageMetadata) error {
 	var provBytes []byte
 	var appDir string
 	var machOExec []byte
+	var provisionPresent, provisionRead int
+	var binaryLimited, provisionLimited bool
 	var execName string
 
 	for _, f := range zr.File {
@@ -365,6 +376,8 @@ func inspectIPAArchive(zr *zip.Reader, meta *PackageMetadata) error {
 				appDir = parts[0] + "/" + parts[1] + "/"
 				plistBytes, _ = readBoundedZipFile(f, maxPlistDecodeBytes)
 			} else if strings.EqualFold(parts[2], "embedded.mobileprovision") {
+				provisionPresent = 1
+				provisionLimited = f.UncompressedSize64 > maxPlistDecodeBytes
 				provBytes, _ = readBoundedZipFile(f, maxPlistDecodeBytes)
 			}
 		}
@@ -376,7 +389,9 @@ func inspectIPAArchive(zr *zip.Reader, meta *PackageMetadata) error {
 		return err
 	}
 	if len(provBytes) > 0 {
-		_ = ParseMobileProvision(provBytes, meta)
+		if ParseMobileProvision(provBytes, meta) == nil {
+			provisionRead = 1
+		}
 	}
 	if dictRaw, err := decodePlistExecutableName(plistBytes); err == nil && dictRaw != "" {
 		execName = dictRaw
@@ -387,6 +402,7 @@ func inspectIPAArchive(zr *zip.Reader, meta *PackageMetadata) error {
 		}
 		lower := strings.ToLower(f.Name)
 		if appDir != "" && execName != "" && f.Name == appDir+execName {
+			binaryLimited = f.UncompressedSize64 > maxZIPScanEntryBytes
 			machOExec, _ = readBoundedZipFile(f, maxZIPScanEntryBytes)
 		} else if strings.HasSuffix(lower, ".jsbundle") || strings.HasSuffix(lower, "main.jsbundle") || strings.HasSuffix(lower, "googleservice-info.plist") || strings.HasSuffix(lower, ".plist") && strings.HasPrefix(lower, strings.ToLower(appDir)) {
 			if raw, err := readBoundedZipFile(f, maxZIPScanEntryBytes); err == nil {
@@ -408,6 +424,25 @@ func inspectIPAArchive(zr *zip.Reader, meta *PackageMetadata) error {
 		scanTextBufferForEndpoints(machOExec, meta)
 		extractSBOMHints(machOExec, meta)
 	}
+	provision := countedStage("provisioning", provisionRead, provisionPresent)
+	if provisionLimited {
+		provision.Status = "limited"
+	}
+	meta.Checks = append(meta.Checks, countedStage("info_plist", 1, 1), provision)
+	binary := countedStage("binary_metadata", 0, 1)
+	if len(meta.NativeBinaries) > 0 {
+		binary.Checked = 1
+		binary.Status = "complete"
+	} else if execName == "" {
+		binary.Status = "unknown"
+		binary.Note = "清单未声明可执行文件"
+	}
+	if binaryLimited {
+		binary.Status = "limited"
+		binary.Note = "仅检查了文件前部"
+	}
+	meta.Checks = append(meta.Checks, binary)
+
 	return nil
 }
 
@@ -581,7 +616,7 @@ func readBoundedZipFile(f *zip.File, limit int64) ([]byte, error) {
 	return b, nil
 }
 
-func fileSHA256(path string) (string, error) {
+func SampleSHA256(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err

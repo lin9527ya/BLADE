@@ -652,6 +652,8 @@ func (s *Server) registerMobileRoutes(mux routeRegistrar) {
 	mux.HandleFunc("DELETE /api/mobile/devices/{serial}", s.deleteMobileDevice)
 	mux.HandleFunc("GET /api/mobile/frida/scripts", s.listFridaScripts)
 
+	mux.HandleFunc("POST /api/tasks/{id}/mobile/samples/register", s.retryMobileRegistration)
+	mux.HandleFunc("GET /api/tasks/{id}/mobile/reports", s.mobileReports)
 	mux.HandleFunc("GET /api/tasks/{id}/mobile/state", s.getTaskMobileState)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/static-audit", s.handleTaskMobileStaticAudit)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/decompile-audit", s.handleTaskMobileDecompileAudit)
@@ -682,11 +684,9 @@ func (s *Server) listMobileDevices(w http.ResponseWriter, r *http.Request) {
 	if tr := s.m.Traffic(); tr != nil {
 		pemCA, _ = tr.CACertPEM()
 	}
-	live, err := s.m.Mobile().ListDevices(r.Context(), pemCA)
-	if err == nil {
-		for _, d := range live {
-			_ = s.m.pg.UpsertMobileDevice(d)
-		}
+	live, err, iosErr := s.m.Mobile().DeviceInventory(r.Context(), pemCA)
+	for _, d := range live {
+		_ = s.m.pg.UpsertMobileDevice(d)
 	}
 	records, rerr := s.m.pg.ListMobileDevices()
 	if rerr != nil {
@@ -708,6 +708,9 @@ func (s *Server) listMobileDevices(w http.ResponseWriter, r *http.Request) {
 	out := make([]mergedDevice, 0, len(records))
 	for _, rec := range records {
 		m := mergedDevice{MobileDeviceRecord: rec, State: "disconnected"}
+		if (rec.Platform == "ios" && iosErr != nil) || (rec.Platform != "ios" && err != nil) {
+			m.State = "unknown"
+		}
 		if ld, ok := liveMap[rec.Serial]; ok {
 			m.State = ld.State
 			m.FridaPID = ld.FridaPID
@@ -725,7 +728,11 @@ func (s *Server) listMobileDevices(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		warn = err.Error()
 	}
-	writeJSON(w, 200, map[string]any{"devices": out, "adb_warning": warn})
+	iw := ""
+	if iosErr != nil {
+		iw = iosErr.Error()
+	}
+	writeJSON(w, 200, map[string]any{"devices": out, "adb_warning": warn, "ios_warning": iw})
 }
 
 func (s *Server) connectMobileDevice(w http.ResponseWriter, r *http.Request) {
@@ -801,6 +808,7 @@ func (s *Server) getTaskMobileState(w http.ResponseWriter, r *http.Request) {
 	if len(cfg.AppManifestJSON) > 2 {
 		var pm mobile.PackageMetadata
 		if json.Unmarshal(cfg.AppManifestJSON, &pm) == nil && (pm.PackageName != "" || pm.SampleName != "") {
+			pm.ProtectReportMetadata()
 			manifest = &pm
 		}
 	}
@@ -812,14 +820,12 @@ func (s *Server) getTaskMobileState(w http.ResponseWriter, r *http.Request) {
 	}
 	var boundDev *mobile.DeviceInfo
 	if cfg.MobileDeviceID != "" {
-		if devs, lerr := s.m.Mobile().ListDevices(r.Context(), pemCA); lerr == nil {
-			for i := range devs {
-				if devs[i].Serial == cfg.MobileDeviceID {
-					cp := devs[i]
-					boundDev = &cp
-					_ = s.m.pg.UpsertMobileDevice(cp)
-					break
-				}
+		devices, _, _ := s.m.Mobile().DeviceInventory(r.Context(), pemCA)
+		for i := range devices {
+			if devices[i].Serial == cfg.MobileDeviceID {
+				boundDev = &devices[i]
+				_ = s.m.pg.UpsertMobileDevice(devices[i])
+				break
 			}
 		}
 	}
@@ -833,24 +839,43 @@ func (s *Server) getTaskMobileState(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	decompileAudit := s.loadPersistedDecompileAudit(taskID)
+	var decompileAudit *mobile.DecompileAuditReport
+	if r.URL.Query().Get("omit_report") != "1" && len(cfg.AppSamplePaths) > 0 {
+		sample, e := s.registeredMobileSample(taskID, cfg, "")
+		if e != nil {
+			writeErr(w, 400, e.Error())
+			return
+		}
+		_, decompileAudit, e = mobile.ReadReportHistory(filepath.Join(s.m.dir, "tasks", t.ID), sample, "")
+		if e != nil {
+			writeErr(w, 500, "读取移动报告失败")
+			return
+		}
+	}
+	pending, perr := s.pendingMobileSamples(t.ID, cfg.AppSamplePaths)
+	if perr != nil {
+		writeErr(w, 500, "读取待登记样本失败")
+		return
+	}
 	screenshots := s.listTaskScreenshots(taskID)
 	writeJSON(w, 200, map[string]any{
-		"task_id":          t.ID,
-		"app_mode":         cfg.AppMode,
-		"app_platform":     cfg.AppPlatform,
-		"app_package_name": cfg.AppPackageName,
-		"app_sample_paths": cfg.AppSamplePaths,
-		"manifest":         manifest,
-		"decompile_audit":  decompileAudit,
-		"screenshots":      screenshots,
-		"mobile_device_id": cfg.MobileDeviceID,
-		"proxy_mode":       cfg.MobileProxyMode,
-		"bound_device":     boundDev,
-		"frida_sessions":   s.m.Mobile().ListFridaSessions(taskID),
-		"pinning_alerts":   alerts,
-		"scope_hosts":      scopeHosts,
-		"setup_info":       s.buildMobileSetupInfo(r.Host),
+		"task_id":              t.ID,
+		"app_mode":             cfg.AppMode,
+		"app_platform":         cfg.AppPlatform,
+		"app_package_name":     cfg.AppPackageName,
+		"app_sample_paths":     cfg.AppSamplePaths,
+		"manifest":             manifest,
+		"decompile_audit":      decompileAudit,
+		"manual_source_review": s.mobileManualReviewAllowed(r),
+		"pending_samples":      pending,
+		"screenshots":          screenshots,
+		"mobile_device_id":     cfg.MobileDeviceID,
+		"proxy_mode":           cfg.MobileProxyMode,
+		"bound_device":         boundDev,
+		"frida_sessions":       s.m.Mobile().ListFridaSessions(taskID),
+		"pinning_alerts":       alerts,
+		"scope_hosts":          scopeHosts,
+		"setup_info":           s.buildMobileSetupInfo(r.Host),
 	})
 }
 
@@ -1429,50 +1454,55 @@ func (s *Server) resolveTaskSampleAbs(taskID int64, requestedSample string) (str
 	if err != nil {
 		return "", cfg, err
 	}
-	sampleRel := strings.TrimSpace(requestedSample)
-	if sampleRel == "" && len(cfg.AppSamplePaths) > 0 {
-		sampleRel = cfg.AppSamplePaths[0]
+	sample, err := s.registeredMobileSample(taskID, cfg, requestedSample)
+	if err != nil {
+		return "", cfg, err
 	}
-	if sampleRel == "" {
-		return "", cfg, fmt.Errorf("任务 #%d 暂无可审计的安装包样本", taskID)
+	target := filepath.Join(s.m.dir, "tasks", strconv.FormatInt(taskID, 10), filepath.FromSlash(sample))
+	real, e := s.realMobileWorkspaceRel(target)
+	if e != nil || real != s.wsRel(target) {
+		return "", cfg, fmt.Errorf("样本已清理或路径不属于当前任务")
 	}
-	baseAbs, _ := filepath.Abs(s.m.dir)
-	targetAbs := sampleRel
-	if !filepath.IsAbs(targetAbs) {
-		targetAbs = filepath.Join(s.m.dir, filepath.FromSlash(sampleRel))
+	fi, e := os.Stat(target)
+	if e != nil || !fi.Mode().IsRegular() {
+		return "", cfg, fmt.Errorf("样本不可读取")
 	}
-	targetAbs, err = filepath.Abs(targetAbs)
-	if err != nil || !strings.HasPrefix(targetAbs, baseAbs+string(filepath.Separator)) {
-		return "", cfg, fmt.Errorf("非法样本路径")
-	}
-	if _, err := os.Stat(targetAbs); err != nil {
-		return "", cfg, fmt.Errorf("样本文件不存在或已清理: %v", err)
-	}
-	return targetAbs, cfg, nil
+	return target, cfg, nil
 }
 
-func (s *Server) runTaskStaticAudit(taskID int64, requestedSample string) (*mobile.PackageMetadata, error) {
+func (s *Server) runTaskStaticAudit(taskID int64, requestedSample string, hints ...string) (*mobile.PackageMetadata, error) {
 	targetAbs, cfg, err := s.resolveTaskSampleAbs(taskID, requestedSample)
 	if err != nil {
 		return nil, err
 	}
-	meta, err := mobile.InspectPackage(targetAbs)
-	if err != nil {
-		return nil, err
+	prev, e := readMobileReceipt(targetAbs)
+	if e != nil && !os.IsNotExist(e) {
+		return nil, e
 	}
 	rel, _ := filepath.Rel(s.m.dir, targetAbs)
-	meta.SamplePath = filepath.ToSlash(rel)
-	manRaw, _ := json.Marshal(meta)
-	_ = s.m.pg.UpdateTaskAppMetadata(taskID, cfg.AppSamplePaths, manRaw, string(meta.Platform), meta.PackageName)
-	if t, ok := s.m.Task(strconv.FormatInt(taskID, 10)); ok && t != nil {
-		t.updateLifecycle(func(st *taskLifecycleState) {
-			st.AppMode = "mobile"
-			st.AppPlatform = string(meta.Platform)
-			st.AppPackageName = meta.PackageName
-			st.AppManifestJSON = manRaw
-		})
+	st, e := os.Stat(targetAbs)
+	if e != nil {
+		return nil, e
 	}
-	return meta, nil
+	hint := prev.AppID
+	if hint == "" && len(cfg.AppSamplePaths) > 0 && (cfg.AppSamplePaths[0] == rel || cfg.AppSamplePaths[0] == targetAbs) {
+		hint = mobile.ExtractWeChatAppID(cfg.AppPackageName)
+	}
+	if len(hints) > 0 && strings.TrimSpace(hints[0]) != "" {
+		hint = hints[0]
+	}
+	item := inspectUploadedSample(targetAbs, rel, hint, st.Size())
+	item.Registration = "registered"
+	if e = saveMobileReceipt(targetAbs, item); e != nil {
+		return nil, e
+	}
+	if item.Manifest == nil {
+		return nil, fmt.Errorf("解析失败：%s", item.Message)
+	}
+	if e = s.adoptUploadedToTask(taskID, []appUploadResult{item}); e != nil {
+		return nil, e
+	}
+	return item.Manifest, nil
 }
 
 func (s *Server) runTaskDecompileAudit(ctx context.Context, taskID int64, requestedSample, mode string, skipApktool bool, hintAppID string) (*mobile.DecompileAuditReport, error) {
@@ -1484,10 +1514,24 @@ func (s *Server) runTaskDecompileAudit(ctx context.Context, taskID int64, reques
 	if err := os.MkdirAll(taskRoot, 0o755); err != nil {
 		return nil, err
 	}
+	saved, e := readMobileReceipt(targetAbs)
+	if e != nil && !os.IsNotExist(e) {
+		return nil, e
+	}
+	if hintAppID == "" {
+		hintAppID = saved.AppID
+	}
+	if hintAppID == "" && len(cfg.AppSamplePaths) > 0 {
+		primary, _ := s.registeredMobileSample(taskID, cfg, "")
+		rel, _ := filepath.Rel(taskRoot, targetAbs)
+		if filepath.ToSlash(rel) == primary {
+			hintAppID = cfg.AppPackageName
+		}
+	}
 	rep, err := mobile.DecompileAndAudit(ctx, targetAbs, taskRoot, mobile.DecompileOptions{
 		Mode:        mode,
 		SkipApktool: skipApktool,
-		HintAppID:   fallbackStr(hintAppID, cfg.AppPackageName),
+		HintAppID:   hintAppID,
 	})
 	if err != nil {
 		return nil, err
@@ -1495,8 +1539,16 @@ func (s *Server) runTaskDecompileAudit(ctx context.Context, taskID int64, reques
 	if rep.ManifestMeta != nil {
 		rel, _ := filepath.Rel(s.m.dir, targetAbs)
 		rep.ManifestMeta.SamplePath = filepath.ToSlash(rel)
-		manRaw, _ := json.Marshal(rep.ManifestMeta)
-		_ = s.m.pg.UpdateTaskAppMetadata(taskID, cfg.AppSamplePaths, manRaw, string(rep.ManifestMeta.Platform), rep.ManifestMeta.PackageName)
+		item := appUploadResult{SamplePath: rep.ManifestMeta.SamplePath, Name: rep.ManifestMeta.SampleName, SizeBytes: rep.ManifestMeta.SizeBytes, SHA256: rep.SampleSHA256, Manifest: rep.ManifestMeta, Upload: "stored", Inspection: "complete", Registration: "registered", AppID: mobile.ExtractWeChatAppID(hintAppID)}
+		if rep.ManifestMeta.ReviewIncomplete() {
+			item.Inspection = "partial"
+		}
+		if err := saveMobileReceipt(targetAbs, item); err != nil {
+			return rep, err
+		}
+		if err := s.adoptUploadedToTask(taskID, []appUploadResult{item}); err != nil {
+			return rep, err
+		}
 	}
 	s.recordDecompileAuditFacts(taskID, rep)
 	return rep, nil
@@ -1533,11 +1585,17 @@ func (s *Server) handleTaskMobileStaticAudit(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
+	if !s.engine.beginTaskOperation(r.PathValue("id")) {
+		writeErr(w, 409, "任务正在删除")
+		return
+	}
+	defer s.engine.decInflight(r.PathValue("id"))
 	var req struct {
 		SamplePath string `json:"sample_path"`
+		AppID      string `json:"appid"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	meta, err := s.runTaskStaticAudit(taskID, req.SamplePath)
+	meta, err := s.runTaskStaticAudit(taskID, req.SamplePath, req.AppID)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
@@ -1550,6 +1608,11 @@ func (s *Server) handleTaskMobileDecompileAudit(w http.ResponseWriter, r *http.R
 	if !ok {
 		return
 	}
+	if !s.engine.beginTaskOperation(r.PathValue("id")) {
+		writeErr(w, 409, "任务正在删除")
+		return
+	}
+	defer s.engine.decInflight(r.PathValue("id"))
 	var req struct {
 		SamplePath  string `json:"sample_path"`
 		AppID       string `json:"appid"`
@@ -1558,27 +1621,15 @@ func (s *Server) handleTaskMobileDecompileAudit(w http.ResponseWriter, r *http.R
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	rep, err := s.runTaskDecompileAudit(r.Context(), taskID, req.SamplePath, req.Mode, req.SkipApktool, req.AppID)
+	if err != nil && rep != nil {
+		writeJSON(w, http.StatusMultiStatus, map[string]any{"ok": false, "audit": rep, "warning": "报告已保存，任务资料同步失败。可在历史中查看报告，重新运行样本复检以同步资料。"})
+		return
+	}
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "audit": rep})
-}
-
-func (s *Server) loadPersistedDecompileAudit(taskID int64) *mobile.DecompileAuditReport {
-	if taskID <= 0 || strings.TrimSpace(s.m.dir) == "" {
-		return nil
-	}
-	p := filepath.Join(s.m.dir, "tasks", strconv.FormatInt(taskID, 10), "mobile_audit", "report.json")
-	raw, err := os.ReadFile(p)
-	if err != nil || len(raw) == 0 {
-		return nil
-	}
-	var rep mobile.DecompileAuditReport
-	if json.Unmarshal(raw, &rep) != nil {
-		return nil
-	}
-	return &rep
 }
 
 func (s *Server) listTaskScreenshots(taskID int64) []string {

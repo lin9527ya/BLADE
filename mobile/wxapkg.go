@@ -331,7 +331,11 @@ func inspectMiniAppPackage(path, sha string, sizeBytes int64, hintAppID string) 
 		}
 		defer zr.Close()
 		meta.MiniApp.ContainerType = "zip_bundle"
+		var collected uint64
 		for _, zf := range zr.File {
+			if strings.HasSuffix(strings.ToLower(zf.Name), ".wxapkg") {
+				meta.MiniApp.PackageCount++
+			}
 			if !isSafeZipEntryName(zf.Name) {
 				meta.Warnings = appendUnique(meta.Warnings, "archive contains unsafe entry: "+zf.Name)
 				continue
@@ -343,8 +347,15 @@ func inspectMiniAppPackage(path, sha string, sizeBytes int64, hintAppID string) 
 						meta.PackageName = inferred
 					}
 				}
+				if zf.UncompressedSize64 > maxWxapkgRead || collected+zf.UncompressedSize64 > uint64(defaultArchiveLimits().MaxTotalBytes) {
+					meta.Warnings = appendUniqueCap(meta.Warnings, zf.Name+"：子包超过读取上限", 50)
+					continue
+				}
 				raw, rerr := readBoundedZipFile(zf, maxWxapkgRead)
-				if rerr == nil && len(raw) > 0 {
+				if rerr != nil || len(raw) == 0 {
+					meta.Warnings = appendUniqueCap(meta.Warnings, zf.Name+"：子包不可读", 50)
+				} else {
+					collected += uint64(len(raw))
 					pkgs = append(pkgs, struct {
 						name string
 						data []byte
@@ -353,6 +364,10 @@ func inspectMiniAppPackage(path, sha string, sizeBytes int64, hintAppID string) 
 			}
 		}
 	} else {
+		meta.MiniApp.PackageCount = 1
+		if sizeBytes > maxWxapkgRead {
+			return nil, fmt.Errorf("wxapkg exceeds size limit")
+		}
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
@@ -366,10 +381,10 @@ func inspectMiniAppPackage(path, sha string, sizeBytes int64, hintAppID string) 
 		}{name: filepath.Base(path), data: raw})
 	}
 
-	if len(pkgs) == 0 {
+	if meta.MiniApp.PackageCount == 0 {
 		return nil, fmt.Errorf("no .wxapkg payload found in %s", filepath.Base(path))
 	}
-	meta.MiniApp.PackageCount = len(pkgs)
+
 	var bufs []NamedBuffer
 	for _, pk := range pkgs {
 		kind := DetectWxapkgKind(pk.data)
@@ -403,6 +418,7 @@ func inspectMiniAppPackage(path, sha string, sizeBytes int64, hintAppID string) 
 			meta.Warnings = appendUnique(meta.Warnings, perr.Error())
 			continue
 		}
+		meta.MiniApp.ParsedPackages++
 		meta.MiniApp.FileCount += len(parsed.Entries)
 		for _, e := range parsed.Entries {
 			low := strings.ToLower(e.Name)
@@ -414,6 +430,8 @@ func inspectMiniAppPackage(path, sha string, sizeBytes int64, hintAppID string) 
 		}
 	}
 
+	meta.MiniApp.SkippedPackages = meta.MiniApp.PackageCount - meta.MiniApp.ParsedPackages
+	meta.Checks = append(meta.Checks, countedStage("miniapp_packages", meta.MiniApp.ParsedPackages, meta.MiniApp.PackageCount))
 	InspectMiniAppBuffers(bufs, meta)
 	if meta.PackageName == "" {
 		meta.PackageName = "miniapp_unknown"

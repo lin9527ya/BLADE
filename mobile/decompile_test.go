@@ -145,7 +145,7 @@ public class AService {
 	if len(rep2.Secrets) < 2 {
 		t.Fatalf("expected >=2 extracted secrets, got %+v", rep2.Secrets)
 	}
-	secretsTxt, err := os.ReadFile(filepath.Join(taskRoot, "mobile_audit", "secrets.txt"))
+	secretsTxt, err := os.ReadFile(filepath.Join(taskRoot, rep2.AuditDir, "secrets.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package mobile
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -35,5 +36,22 @@ func TestDiscoverIOSDevicesAndPortTunnelHelper(t *testing.T) {
 	cmdDesc, err := CheckIOSPortTunnel(context.Background(), mgr.iosRunner, devs[0].Serial, 27042, 27042)
 	if err != nil || !strings.Contains(cmdDesc, "iproxy 27042:27042 -u 00008110-001234567890001E") {
 		t.Fatalf("unexpected CheckIOSPortTunnel result: cmd=%q err=%v", cmdDesc, err)
+	}
+}
+
+func TestIOSInventoryWithoutADB(t *testing.T) {
+	m := NewManager("")
+	m.runner = func(context.Context, []string, string, ...string) (string, string, int, error) {
+		return "", "", -1, fmt.Errorf("ADB fixture unavailable")
+	}
+	m.iosRunner = func(_ context.Context, _ []string, bin string, args ...string) (string, string, int, error) {
+		if bin == "idevice_id" {
+			return "00008110-001234567890001E\n", "", 0, nil
+		}
+		return "ProductVersion: 16.5\n", "", 0, nil
+	}
+	devices, androidErr, iosErr := m.DeviceInventory(t.Context(), nil)
+	if androidErr == nil || iosErr != nil || len(devices) != 1 || devices[0].Platform != PlatformIOS {
+		t.Fatalf("devices=%+v android=%v ios=%v", devices, androidErr, iosErr)
 	}
 }

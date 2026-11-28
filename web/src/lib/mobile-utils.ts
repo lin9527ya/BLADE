@@ -19,10 +19,19 @@ export function trafficSourceLabel(ex: Pick<TrafficExchange, "source" | "method"
 
 /** 将 MobileDevice 状态概括成简明徽标文本。 */
 export function deviceCapabilitySummary(
-  dev: Pick<MobileDevice, "connection_type" | "rooted" | "system_ca_status" | "frida_server">,
+  dev: Pick<MobileDevice, "connection_type" | "rooted" | "system_ca_status" | "frida_server"> &
+    Partial<Pick<MobileDevice, "platform">>,
 ): string[] {
   const tags: string[] = [];
-  tags.push(dev.connection_type === "wifi" ? "Wi-Fi ADB" : "USB ADB");
+  tags.push(
+    dev.platform === "ios"
+      ? dev.connection_type === "wifi"
+        ? "Wi-Fi iOS"
+        : "USB iOS"
+      : dev.connection_type === "wifi"
+        ? "Wi-Fi ADB"
+        : "USB ADB",
+  );
   if (dev.rooted) tags.push("Root");
   if (dev.system_ca_status === "system_apex" || dev.system_ca_status === "system_legacy") {
     tags.push("系统CA就绪");
@@ -59,4 +68,21 @@ export function parseCandidateDomainInput(raw: string): string[] {
     out.push(clean);
   }
   return out;
+}
+
+export function sampleReceiptText(r: {
+  upload?: string;
+  inspection?: string;
+  registration?: string;
+  message?: string;
+}): string {
+  const label = (v: string | undefined, names: Record<string, string>) => (v ? (names[v] ?? "未知") : "未知");
+  return [
+    label(r.upload, { stored: "已上传" }),
+    label(r.inspection, { complete: "解析完成", partial: "部分解析", failed: "解析失败" }),
+    label(r.registration, { staged: "草稿待登记", registered: "已登记到任务", failed: "登记失败", pending: "待登记" }),
+    r.message,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }

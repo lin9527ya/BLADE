@@ -50,3 +50,16 @@ test("uiElementDisplayLabel and parseCandidateDomainInput", () => {
     "auth.acme.cn",
   ]);
 });
+
+test("iOS discovery labels identify the platform independently of ADB", () => {
+  assert.deepEqual(
+    deviceCapabilitySummary({
+      platform: "ios",
+      connection_type: "usb",
+      rooted: false,
+      system_ca_status: "unknown",
+      frida_server: "unknown",
+    }),
+    ["USB iOS"],
+  );
+});
