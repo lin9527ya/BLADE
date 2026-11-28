@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [0.9.34] - 2026-11-28
+
+### 移动 APP 与微信小程序全流程渗透
+
+- **微信小程序端到端支持**：新增纯 Go `wxapkg` 安全解析与 `V1MMWX` 解密引擎（`mobile/wxapkg.go`，防路径穿越及体积/文件数炸弹），打通 `.wxapkg` 与含分包的 `.zip` 双通道上传（可选 `AppID` 提示）；扩展 `miniapp_audit` 与 `blade-jsaudit.py --dir` 离线白盒扫描，接入 `skills/mini-program/` 技能与独立 Playbook 种子（`task_playbooks_miniapp_v1`），新增 `KillWxapkg v2.4.1`（MIT）独立构建及 `wedecode` 探测，并升级前端移动端工作台展示 `AppID`、加密态、页面/分包路由、`CloudBase` 资产与持久化审计/历史截图。
+- **APP 全流程逆向审计、iOS 与报告基线**：支持安全防穿越解压与质量门控反编译（`jadx`/`apktool` `full`/`partial_packed`/`raw_only`）、目录级白盒扫描与 `mobile_evidence_check` 结构化自检；新增基于 `libimobiledevice` 的 iOS USB 真机发现、`CheckIOSPortTunnel` 与 4 套 iOS Frida 脚本；扩展移动端截图落盘及 `account_label` 多账号提取，并补充任务终态报告缺失提醒与交付报告 **OWASP MASVS v2** / 小程序画像章节。
+
+### 安全作战总控台与工作台导航优化
+
+- 全面升级系统仪表盘为安全作战总控台，扩展轻量查询缓存与统计聚合接口，并将仪表盘 LLM 用量统计统一收敛至新版 `llm_usage` 账本以校准多口径用量核算。
+- 精简左侧栏导航至三组共 16 项，合并任务与计划、资产与范围、战果/凭据/落脚点、命令行/核验账本及系统设置中的 API 令牌管理等工作台页面。
+
+### Planner 上下文重置与连续规划
+
+- 新增清空 Planner 上下文记忆能力，支持从任务会话页及接口显式重置当前规划上下文并在干净记忆基础上继续规划。
+
 ## [0.9.33] - 2026-11-27
 
 ### 对外测试指纹与流量隐蔽性优化
