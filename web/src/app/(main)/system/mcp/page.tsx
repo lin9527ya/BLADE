@@ -28,7 +28,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { MCP_CATALOG } from "@/lib/mcp-catalog";
 import { formatShellArgs, parseShellArgs, transportLabel, validateMcpForm } from "@/lib/mcp-helpers";
-import type { Agent, MCPGuardStatus, MCPServer, MCPTestResult, MCPTool } from "@/lib/types";
+import type { Agent, MCPDiscoveryChange, MCPGuardStatus, MCPServer, MCPTestResult, MCPTool } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { MCPDialogs } from "./_components/mcp-dialogs";
@@ -56,6 +56,9 @@ export default function MCPPage() {
   const [pendingDelete, setPendingDelete] = React.useState<MCPServer | null>(null);
 
   const [tools, setTools] = React.useState<MCPTool[]>([]);
+  const [catalogChange, setCatalogChange] = React.useState<MCPDiscoveryChange | null>(null);
+  const catalogRequest = React.useRef(0);
+  const activeCatalog = React.useRef<number | null>(null);
   const [toolsLoading, setToolsLoading] = React.useState(false);
   const [refreshing, setRefreshing] = React.useState(false);
   const [catalogOpen, setCatalogOpen] = React.useState(false); // 推荐目录弹窗
@@ -186,13 +189,19 @@ export default function MCPPage() {
   }
 
   async function loadTools(id: number) {
+    activeCatalog.current = id;
+    const request = ++catalogRequest.current;
+    setCatalogChange(null);
     setToolsLoading(true);
     try {
-      setTools(await api.mcpTools(id));
+      const data = await api.mcpCatalog(id);
+      if (request !== catalogRequest.current) return;
+      setTools(data.tools ?? []);
+      setCatalogChange(data.last_change ?? null);
     } catch {
-      setTools([]);
+      if (request === catalogRequest.current) setTools([]);
     } finally {
-      setToolsLoading(false);
+      if (request === catalogRequest.current) setToolsLoading(false);
     }
   }
 
@@ -300,7 +309,7 @@ export default function MCPPage() {
     setRefreshing(true);
     try {
       const t = await api.refreshMcpServer(selected.id);
-      setTools(t);
+      if (activeCatalog.current === selected.id) await loadTools(selected.id);
       toast.success(`发现 ${t.length} 个工具`);
       load();
     } catch (e) {
@@ -352,7 +361,7 @@ export default function MCPPage() {
       load(); // 左栏的「N 个工具 · M 停用」跟着变
     } catch (e) {
       toast.error(`操作失败：${(e as Error).message}`);
-      await loadTools(selected.id);
+      if (activeCatalog.current === selected.id) await loadTools(selected.id);
     } finally {
       setTogglingTool(null);
     }
@@ -682,6 +691,21 @@ export default function MCPPage() {
             </>
           }
         >
+          {catalogChange && (
+            <details className="mb-2 text-sm">
+              <summary>最近工具变更 · {new Date(catalogChange.at).toLocaleString()}</summary>
+              <ul>
+                {catalogChange.items.map((i) => (
+                  <li key={i.name}>
+                    {i.name} ·{" "}
+                    {[i.added && "新增", i.removed && "移除", i.description && "描述修改", i.schema && "参数修改"]
+                      .filter(Boolean)
+                      .join("、")}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
           {renderToolsBody()}
         </SubBlock>
 

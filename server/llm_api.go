@@ -233,7 +233,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 		s.llm.mu.Lock()
 		profName := s.llm.profile
 		s.llm.mu.Unlock()
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled, BuildVersion)
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled, BuildVersion).WithBodyMode(s.m.LLMRecordMode)
 		prov = bindSideProvider(prov, cfg, 0, profName)
 	}
 	s.llm.mu.Lock()
@@ -356,7 +356,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	}
 	// Wrap with recorder, tagged with this profile's name.
 	if p, _ := s.m.pg.ProfileByID(id); p != nil {
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled, BuildVersion)
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled, BuildVersion).WithBodyMode(s.m.LLMRecordMode)
 		prov = bindSideProvider(prov, cfg, id, p.Name)
 	}
 	s.providers.cacheMu.Lock()

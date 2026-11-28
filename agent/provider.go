@@ -556,6 +556,13 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 
 	traceCache := traceModelRequest(req)
 	hint := RetryHintFrom(req.Context())
+	if images, ok := req.Context().Value(manualImagesKey{}).(manualImages); ok {
+		adapted, e := addManualImages(req, images)
+		if e != nil {
+			return nil, e
+		}
+		req = adapted
+	}
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {
 		hint.RecordTransportFailure()

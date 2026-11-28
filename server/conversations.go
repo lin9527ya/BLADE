@@ -506,12 +506,17 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 	// conversation's chosen profile before falling back to the global config, so a
 	// conversation that picked a valid LLM is not rejected just because no global
 	// config is active.
-	if s.resolveChatAgent(c) == nil {
+	busyKey := s.convBusyKey(c.ID)
+	baseDir := filepath.Join(s.m.dir, "sessions", busyKey)
+	vision, ok := s.prepareVisionTurn(w, nil, c, baseDir, req.Attachments)
+	if !ok {
+		return
+	}
+	if vision == nil && s.resolveChatAgent(c) == nil {
 		writeErr(w, 503, s.chatUnavailableReason())
 		return
 	}
 
-	busyKey := s.convBusyKey(c.ID)
 	s.chatRuns.mu.Lock()
 	if s.chatRuns.busy[busyKey] {
 		s.chatRuns.mu.Unlock()
@@ -555,7 +560,19 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 	// Read/Bash tools. baseDir = the agent's per-session CWD (<workDir>/sessions/
 	// conv-<id>/), matching chatUpload's landing dir and agent/chat.go's sessionWorkDir
 	// — busyKey == convBusyKey(c.ID) == "conv-<id>" == that session id.
-	baseDir := filepath.Join(s.m.dir, "sessions", busyKey)
+	if vision != nil {
+		ctx, cancel := s.conversationRunContext(c.ID, busyKey)
+		goSafe("conversation/manual-image", nil, func() {
+			defer s.finishTaskChat(busyKey, cancel)
+			rec := vision.answer(ctx, busyKey, c.AgentKey, msg)
+			if _, err := pg.AppendConvActivity(c.ID, rec); err != nil {
+				log.Printf("save vision response: %v", err)
+			}
+			_ = pg.TouchConversation(c.ID)
+		})
+		writeJSON(w, 202, map[string]string{"status": "accepted"})
+		return
+	}
 	s.runConversationAs(r.Context(), c, composeAgentMessage(agentMessage, req.Attachments, baseDir), busyKey, msg)
 	writeJSON(w, 202, map[string]any{"status": "accepted"})
 }

@@ -168,7 +168,7 @@ var updHub = &updateHub{
 func (h *updateHub) begin(version string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.running {
+	if h.running || h.cur.Phase == selfupdate.PhaseStaged {
 		return false
 	}
 	h.running = true
@@ -218,6 +218,7 @@ func (h *updateHub) subscribe() (<-chan updateProgress, func()) {
 	ch := make(chan updateProgress, 64)
 	h.mu.Lock()
 	h.subs[ch] = struct{}{}
+	ch <- h.cur // Queue the initial snapshot before any later publication.
 	h.mu.Unlock()
 	var once sync.Once
 	return ch, func() {
@@ -301,6 +302,11 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 // 立刻返回 202，实际工作在后台 goroutine 上跑：整包下载可能要几分钟，
 // 挂在请求上会被反代超时掐断。进度走 /api/update/stream。
 func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
+	if p, running := updHub.snapshot(); running || p.Phase == selfupdate.PhaseStaged {
+		writeErr(w, http.StatusConflict, "已有升级正在进行")
+		return
+	}
+
 	current := BuildVersion
 
 	// 走缓存：确保装上的就是用户在界面上看到并确认的那个版本。
@@ -383,8 +389,6 @@ func (s *Server) updateStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 	// 先补一条当前状态，页面刷新后能立刻看到进行中的升级。
-	cur, _ := updHub.snapshot()
-	send(cur)
 
 	ctx := r.Context()
 	ping := time.NewTicker(20 * time.Second)
@@ -403,4 +407,11 @@ func (s *Server) updateStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// updateStatus reads local state even when the release provider is unreachable.
+func (s *Server) updateStatus(w http.ResponseWriter, r *http.Request) {
+	p, running := updHub.snapshot()
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]any{"current": BuildVersion, "running": running, "progress": p})
 }

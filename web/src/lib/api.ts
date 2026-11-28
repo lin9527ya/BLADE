@@ -1,3 +1,4 @@
+import { isChatImage, pendingImageFiles } from "./chat-images";
 // Real backend client. /api/* is proxied to the Go backend (next.config rewrites).
 // Returns the domain types in lib/types.ts. Shapes match the backend handlers;
 // a few fields the backend serializes differently (e.g. created_at as a unix int)
@@ -131,6 +132,7 @@ import type {
   LLMRetryPolicy,
   LLMTask,
   LootItem,
+  MCPDiscoveryChange,
   MCPGuardStatus,
   MCPServer,
   MCPTestResult,
@@ -210,6 +212,7 @@ import type {
   TrafficResp,
   TunnelItem,
   UpdateCheck,
+  UpdateProgress,
   UsageStats,
   VerificationLedgerRow,
   WebSearchTestResult,
@@ -350,6 +353,12 @@ export function sseUrl(path: string): string {
   const token = getToken();
   const sep = path.includes("?") ? "&" : "?";
   return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`;
+}
+
+async function checkManualImages(scope: string, id: string, attachments?: ChatAttachment[]) {
+  if (!attachments?.some(isChatImage)) return;
+  const r = await http<{ status: string; model: string }>(`/chat/vision?${new URLSearchParams({ scope, id })}`);
+  if (r.status !== "supported") throw new Error(`${r.model} 尚未通过图片测试，请先点击「测试读图」。`);
 }
 
 const get = <T>(p: string, init?: RequestInit) => http<T>(p, init);
@@ -2311,8 +2320,10 @@ export const api = {
       `/chat/mentions?${new URLSearchParams({ kind, q: query, cursor })}`,
       { signal },
     ),
-  chat: (message: string, task?: string, attachments?: ChatAttachment[], seg?: number) =>
-    post<{ reply: string; mode: string }>(`/chat${tq(task)}`, { message, attachments, seg }),
+  chat: async (message: string, task?: string, attachments?: ChatAttachment[], seg?: number) => {
+    await checkManualImages("task", task ?? "", attachments);
+    return post<{ reply: string; mode: string }>(`/chat${tq(task)}`, { message, attachments, seg });
+  },
   chatStatus: (taskId: string) => get<{ running: boolean }>(`/tasks/${taskId}/chat/status`),
   // 方式1 文件上传:落到会话/任务工作目录 uploads/，返回可供 agent Read 的相对路径。
   chatUpload: async (scope: "task" | "session" | "staging", id: string, files: File[]) => {
@@ -2334,7 +2345,12 @@ export const api = {
       body: fd,
     });
     if (!r.ok) throw new Error(`上传失败: ${r.status} ${await r.text()}`);
-    return r.json() as Promise<{ attachments: ChatAttachment[] }>;
+    const result: { attachments: ChatAttachment[] } = await r.json();
+    if (scope !== "staging")
+      result.attachments.forEach((a, i) => {
+        if (files[i]) pendingImageFiles.set(a, files[i]);
+      });
+    return result;
   },
   stopChat: (taskId: string) => post<{ status: string }>(`/tasks/${taskId}/chat/stop`, {}),
 
@@ -2497,8 +2513,10 @@ export const api = {
   },
   conversationMsgDetail: (id: number, seq: number) =>
     get<{ detail: string }>(`/conversations/${id}/messages/${seq}`).then((r) => r.detail ?? ""),
-  sendConversationMessage: (id: number, message: string, attachments?: ChatAttachment[]) =>
-    post<{ status: string }>(`/conversations/${id}/messages`, { message, attachments }),
+  sendConversationMessage: async (id: number, message: string, attachments?: ChatAttachment[]) => {
+    await checkManualImages("session", String(id), attachments);
+    return post<{ status: string }>(`/conversations/${id}/messages`, { message, attachments });
+  },
   stopConversation: (id: number) => post<{ status: string }>(`/conversations/${id}/stop`, {}),
   saveAgentPrompt: (key: string, template: string, note = "") =>
     put<{ version: number }>(`/agents/${key}/prompt`, { template, note }),
@@ -2578,6 +2596,7 @@ export const api = {
   saveMcpServer: (m: Partial<MCPServer>) => post<SaveMCPResult>("/mcp", m),
   testMcpServer: (m: Partial<MCPServer>) => post<MCPTestResult>("/mcp/test", m),
   deleteMcpServer: (id: number) => del<{ deleted: number }>(`/mcp/${id}`),
+  mcpCatalog: (id: number) => get<{ tools: MCPTool[]; last_change?: MCPDiscoveryChange | null }>(`/mcp/${id}/tools`),
   mcpTools: (id: number) => get<{ tools: MCPTool[] }>(`/mcp/${id}/tools`).then((r) => arr(r.tools)),
   refreshMcpServer: (id: number) => post<{ tools: MCPTool[] }>(`/mcp/${id}/refresh`, {}).then((r) => arr(r.tools)),
   // P25：工具级开关（全局）——关掉的工具不再注入任何 Agent 的工具面。
@@ -2886,6 +2905,7 @@ export const api = {
   // 后端对 GitHub 的查询结果有 30 分钟缓存（未认证的 GitHub API 是 60 次/小时/IP，
   // 顶栏每次整页加载都会查一次，不缓存会很快耗光配额）。force=true 强制回源，
   // 留给用户显式点「检查更新」时用。
+  updateStatus: () => get<{ current: string; running: boolean; progress: UpdateProgress }>("/update/status"),
   checkUpdate: (force = false) => get<UpdateCheck>(`/update/check${force ? "?force=1" : ""}`),
   // 202 即返回，实际下载在后台跑，进度走 /api/update/stream。
   applyUpdate: () => post<{ ok: boolean; target: string }>(`/update/apply`),

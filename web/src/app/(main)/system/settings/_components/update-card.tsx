@@ -44,6 +44,24 @@ function humanSize(n?: number): string {
   return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+const pendingKey = "blade.pending-update";
+function rememberUpdate(from: string, target?: string) {
+  try {
+    if (target) sessionStorage.setItem(pendingKey, JSON.stringify({ from, target }));
+    else sessionStorage.removeItem(pendingKey);
+  } catch {
+    /* Optional browser storage. */
+  }
+}
+function pendingUpdate(): { from: string; target: string } | null {
+  try {
+    const p = JSON.parse(sessionStorage.getItem(pendingKey) ?? "null");
+    return p && typeof p.from === "string" && typeof p.target === "string" ? p : null;
+  } catch {
+    return null;
+  }
+}
+
 export function UpdateCard() {
   const [info, setInfo] = React.useState<UpdateCheck | null>(null);
   const [checking, setChecking] = React.useState(true);
@@ -57,6 +75,7 @@ export function UpdateCard() {
     () => () => {
       streamRef.current?.close();
       restartRef.current?.abort();
+      streamRef.current = null;
     },
     [],
   );
@@ -119,6 +138,7 @@ export function UpdateCard() {
     restartRef.current?.abort();
     const controller = new AbortController();
     restartRef.current = controller;
+    rememberUpdate(fromVersion, target);
     setRestarting(true);
     try {
       const version = await waitForVersion({
@@ -135,13 +155,16 @@ export function UpdateCard() {
         },
       });
       if (controller.signal.aborted) return;
+      rememberUpdate("");
       toast.success(`已切换到 ${version}，正在重新加载页面`);
       await abortableDelay(800, controller.signal);
       window.location.reload();
     } catch (error) {
+      if (!controller.signal.aborted) rememberUpdate("");
       if (!controller.signal.aborted) toast.error(error instanceof Error ? error.message : "等待服务重启失败");
     } finally {
       if (!controller.signal.aborted) {
+        restartRef.current = null;
         setRestarting(false);
         setBusy(false);
       }
@@ -161,27 +184,75 @@ export function UpdateCard() {
         } catch {
           return;
         }
+        if (streamRef.current !== es) return;
+        if (p.phase !== "idle" && p.phase !== "failed") rememberUpdate(fromVersion, p.version || target);
         setProgress(p);
         if (p.phase === "failed") {
+          rememberUpdate("");
           es.close();
+          streamRef.current = null;
           setBusy(false);
           toast.error(`更新失败：${p.error || p.message}`);
           return;
         }
         if (p.phase === "staged") {
           es.close();
-          void waitForNewVersion(fromVersion, target);
+          streamRef.current = null;
+          void waitForNewVersion(fromVersion, p.version || target);
         }
-      };
-      es.onerror = () => {
-        // 进程退出时 SSE 必然断开。如果已经进入等待重启，这属于正常现象，
-        // 交给 readiness + system/info 轮询继续判定即可。
-        es.close();
       };
       return es;
     },
     [waitForNewVersion],
   );
+
+  React.useEffect(() => {
+    let active = true;
+    let checking = false;
+    const poll = async () => {
+      if (checking || (restartRef.current && !restartRef.current.signal.aborted)) return;
+      checking = true;
+      try {
+        const local = await api.updateStatus();
+        if (!active) return;
+        if (local.progress.phase === "staged") {
+          setBusy(true);
+          setProgress(local.progress);
+          void waitForNewVersion(local.current, local.progress.version);
+          return;
+        }
+        if (local.running) {
+          setBusy(true);
+          setProgress(local.progress);
+          rememberUpdate(local.current, local.progress.version);
+          if (!streamRef.current) openStream(local.current, local.progress.version);
+        } else if (local.progress.phase === "failed") {
+          rememberUpdate("");
+          streamRef.current?.close();
+          streamRef.current = null;
+          setProgress(local.progress);
+          setBusy(false);
+        } else {
+          const pending = pendingUpdate();
+          if (pending) {
+            streamRef.current?.close();
+            streamRef.current = null;
+            void waitForNewVersion(pending.from, pending.target);
+          }
+        }
+      } catch {
+        /* Service may be restarting. */
+      } finally {
+        checking = false;
+      }
+    };
+    void poll();
+    const timer = setInterval(poll, 3000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [openStream, waitForNewVersion]);
 
   const doUpdate = () => {
     if (!info) return;
@@ -199,12 +270,23 @@ export function UpdateCard() {
     setBusy(true);
     setProgress({ phase: "downloading", percent: 0, message: "准备中…" });
     const es = openStream(from, info.latest);
-    api.applyUpdate().catch((e) => {
-      es.close();
-      setBusy(false);
-      setProgress(null);
-      toast.error(`启动更新失败：${(e as Error).message}`);
-    });
+    api
+      .applyUpdate()
+      .then((r) => rememberUpdate(from, r.target))
+      .catch(async (e) => {
+        if (e?.status === 409) {
+          const local = await api.updateStatus().catch(() => null);
+          if (local?.running || local?.progress.phase === "staged") {
+            setProgress(local.progress);
+            return;
+          }
+        }
+        es.close();
+        streamRef.current = null;
+        setBusy(false);
+        setProgress(null);
+        toast.error(`启动更新失败：${(e as Error).message}`);
+      });
   };
 
   const doRollback = () => {

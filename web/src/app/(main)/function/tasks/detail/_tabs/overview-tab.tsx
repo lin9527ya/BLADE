@@ -46,6 +46,7 @@ import { ArtifactPanel } from "./_components/artifact-panel";
 import { CollapsibleOverviewCard } from "./_components/collapsible-overview-card";
 import { ExplorationTrackingCard } from "./_components/exploration-tracking-card";
 import { GoalProofReview } from "./_components/goal-proof-review";
+import { ModelConfigPreview } from "./_components/model-config-preview";
 import {
   TaskAssetScopeCard,
   TaskCredentialBudgetCard,
@@ -275,6 +276,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
   return (
     <div className="flex flex-col gap-4">
       <TaskRelationsCard taskId={taskId} />
+      <ModelConfigPreview taskId={taskId} />
       {/* 遗留物（P43）：我们留在目标上的东西。放在最前面——任务收尾前最该被看见的一条，
           没清掉的 webshell 就是留在客户系统上的后门。
           active 与 unknown 分开说：unknown 是"没去确认还在不在"，并进未清理会把

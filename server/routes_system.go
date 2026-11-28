@@ -16,7 +16,11 @@ func (s *Server) registerSystemRoutes(mux routeRegistrar) {
 
 	mux.HandleFunc("GET /api/health", s.health)
 	// 版本信息（需登录）：从 /api/health 搬过来，免得免认证端点自报家门。
+	mux.HandleFunc("GET /api/system/tls", s.consoleTLSAPI)
+	mux.HandleFunc("POST /api/system/tls", s.consoleTLSAPI)
 	mux.HandleFunc("GET /api/system/info", s.systemInfo)
+	mux.HandleFunc("GET /api/chat/vision", s.chatVision)
+	mux.HandleFunc("POST /api/chat/vision", s.chatVision)
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /api/dashboard", s.dashboardSummary)
 	mux.HandleFunc("GET /api/logs", s.getLogs)
@@ -28,5 +32,6 @@ func (s *Server) registerSystemRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/update/check", s.updateCheck)
 	mux.HandleFunc("POST /api/update/apply", s.updateApply)
 	mux.HandleFunc("POST /api/update/rollback", s.updateRollback)
+	mux.HandleFunc("GET /api/update/status", s.updateStatus)
 	mux.HandleFunc("GET /api/update/stream", s.updateStream)
 }

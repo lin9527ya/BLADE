@@ -14,6 +14,7 @@ import (
 	"github.com/lin9527ya/blade/agent"
 	"github.com/lin9527ya/blade/db"
 	"github.com/lin9527ya/blade/intercept"
+	"github.com/lin9527ya/blade/llmrec"
 )
 
 // mainSessions lists the task's main-agent conversation segments (newest-first) and
@@ -82,6 +83,10 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	vision, ok := s.prepareVisionTurn(w, t, nil, filepath.Join(s.m.dir, "tasks", t.ID), req.Attachments)
+	if !ok {
+		return
+	}
 	// Admission is serialized with deletion's chat cancellation. Mark every chat
 	// turn busy before its first activity/file write, including rule-mode turns.
 	// If deletion wins the race, the second barrier check rejects this request.
@@ -122,6 +127,17 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	humanTurn := userActivityWithAttachments("mainagent", req.Message, req.Attachments)
 	humanTurn.MainSeg = segPtr
 	s.engine.emitActivity(t, humanTurn)
+	if vision != nil {
+		goSafe("task/manual-image", nil, func() {
+			defer s.finishTaskChat(t.ID, cancel)
+			ctx = llmrec.WithExplorationID(llmrec.WithTaskID(ctx, t.ID), t.ExpID)
+			rec := vision.answer(ctx, agent.MainSessionID(t.ExpID, mainSeg), "mainagent", req.Message)
+			rec.MainSeg = segPtr
+			s.engine.emitActivity(t, rec)
+		})
+		writeJSON(w, 202, map[string]string{"mode": "vision"})
+		return
+	}
 	var ma *agent.MainAgent
 	if s.taskRuntimeAvailable(t, "mainagent") {
 		ma = s.agentsForTask(t).main

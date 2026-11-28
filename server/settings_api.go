@@ -192,16 +192,16 @@ func (s *Server) settingsPayload() map[string]any {
 		"empty_report_patrol": s.m.pg.GetBool(settingEmptyReportPatrol, false),
 		// 凭据明文保真（默认开）：节点接口与战果台账直接带 secret。
 		"credential_plaintext_fidelity": s.m.pg.GetBool(settingCredentialPlaintext, true),
-		"llm_record":                    s.m.LLMRecordEnabled(),
-		"web_search_enabled":            on,
-		"web_search_backend":            backend,
-		"brave_key_set":                 strings.TrimSpace(braveKey) != "",
-		"tavily_key_set":                strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":              proxy, // 独立出口代理(http/https/socks5)，空=直连
-		"web_search_searxng_url":        s.m.SearxngURL(),
-		"web_search_proxy_mode":         s.m.webSearchProxyMode(),
-		"web_search_stats":              agent.GetWebSearchStats(),
-		"global_proxy":                  s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
+		"llm_record":                    s.m.LLMRecordEnabled(), "llm_record_mode": s.m.LLMRecordMode(),
+		"web_search_enabled":     on,
+		"web_search_backend":     backend,
+		"brave_key_set":          strings.TrimSpace(braveKey) != "",
+		"tavily_key_set":         strings.TrimSpace(tavilyKey) != "",
+		"web_search_proxy":       proxy, // 独立出口代理(http/https/socks5)，空=直连
+		"web_search_searxng_url": s.m.SearxngURL(),
+		"web_search_proxy_mode":  s.m.webSearchProxyMode(),
+		"web_search_stats":       agent.GetWebSearchStats(),
+		"global_proxy":           s.m.GlobalProxy(), // 兼容旧字段：代理池第一项（空=未配置）
 		// 代理池：每行一个候选；健康检查与切换运行时生效。proxy_blocked=true 表示
 		// 全部候选都不可用、出口已阻断（**不会直连**）。
 		"global_proxy_pool":             strings.Join(proxyCfg.Candidates, "\n"),
@@ -372,6 +372,7 @@ type settingsRequest struct {
 	AttackChainContinuation *bool    `json:"attack_chain_continuation"`
 	EmptyReportPatrol       *bool    `json:"empty_report_patrol"`
 	CredentialPlaintext     *bool    `json:"credential_plaintext_fidelity"`
+	LLMRecordMode           *string  `json:"llm_record_mode"`
 	LLMRecord               *bool    `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
 	// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 	// are optional — omit (null) to leave a stored key untouched, send "" to clear.
@@ -734,11 +735,28 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			return nil
 		})
 	}
-	if req.LLMRecord != nil {
-		// 录制器每次调用读取该标志，切换即时生效，无需 applyLLM 重建。
-		on := *req.LLMRecord
-		pending[settingLLMRecord] = strconv.FormatBool(on)
-		runtimeApplies = append(runtimeApplies, func() error { return s.m.SetLLMRecordEnabled(on) })
+	if req.LLMRecordMode != nil || req.LLMRecord != nil {
+		mode := s.m.LLMRecordMode()
+		if req.LLMRecordMode != nil {
+			mode = *req.LLMRecordMode
+		} else if *req.LLMRecord && mode == "off" {
+			mode = "full"
+		} else if !*req.LLMRecord {
+			mode = "off"
+		}
+		if mode != "off" && mode != "errors" && mode != "full" {
+			writeErr(w, 400, "未知正文录制模式")
+			return
+		}
+		pending["llm_record_mode"] = mode
+		pending[settingLLMRecord] = strconv.FormatBool(mode != "off")
+		runtimeApplies = append(runtimeApplies, func() error {
+			s.m.mu.Lock()
+			defer s.m.mu.Unlock()
+			s.m.llmRecMode = mode
+			s.m.llmRecOn = mode != "off"
+			return nil
+		})
 	}
 	changed := false
 	if req.LLMPoolEnabled != nil {

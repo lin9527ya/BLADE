@@ -18,6 +18,8 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import type { Company, CompanyKnowledge } from "@/lib/types";
 
+import { CompanyKnowledgePacks } from "./company-knowledge-packs";
+
 const KIND_LABELS: Record<string, string> = {
   fact: "事实",
   conclusion: "结论",
@@ -103,6 +105,7 @@ export function CompanyKnowledgeDialog({ company, onChanged }: { company: Compan
           </DialogDescription>
         </DialogHeader>
         <div className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
+          {open && <CompanyKnowledgePacks key={company.id} company={company.id} />}
           {rows.length === 0 && (
             <p className="py-6 text-center text-muted-foreground text-sm">
               还没有沉淀。任务里可用 promote_knowledge 工具，或在发现详情页点「沉淀到公司知识」。

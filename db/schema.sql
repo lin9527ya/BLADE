@@ -2523,3 +2523,24 @@ CREATE TABLE IF NOT EXISTS im_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_im_actions_created ON im_actions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_im_actions_task ON im_actions(task_id) WHERE task_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS mcp_discovery_baselines (
+    server_id BIGINT PRIMARY KEY REFERENCES mcp_servers(id) ON DELETE CASCADE,
+    last_change JSONB
+);
+
+CREATE TABLE IF NOT EXISTS company_knowledge_packs (
+    id BIGSERIAL PRIMARY KEY,
+    company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    pack_key TEXT NOT NULL, version TEXT NOT NULL, name TEXT NOT NULL,
+    license TEXT NOT NULL, sources JSONB NOT NULL, sha256 TEXT NOT NULL,
+    entry_count INT NOT NULL, status TEXT NOT NULL DEFAULT 'draft'
+        CHECK(status IN ('draft','approved','disabled')),
+    reviewed_by TEXT NOT NULL DEFAULT '', reviewed_at TIMESTAMPTZ,
+    UNIQUE(company_id,pack_key,version)
+);
+CREATE TABLE IF NOT EXISTS company_knowledge_pack_entries (
+    id BIGSERIAL PRIMARY KEY, pack_id BIGINT NOT NULL REFERENCES company_knowledge_packs(id) ON DELETE CASCADE,
+    entry_key TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, source TEXT NOT NULL,
+    UNIQUE(pack_id,entry_key)
+);

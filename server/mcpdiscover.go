@@ -76,7 +76,7 @@ func (s *Server) discoverAndCacheMCPCount(ctx context.Context, m *db.MCPServer) 
 		}
 		tools = append(tools, db.MCPTool{Name: t.Name(), Description: t.Description(), Schema: schema})
 	}
-	if err := s.m.pg.SaveMCPTools(m.ID, tools); err != nil {
+	if err := s.m.pg.SaveDiscoveredMCPTools(m, tools); err != nil {
 		return 0, err
 	}
 	InvalidateMCPSchemaCache(m.ID)

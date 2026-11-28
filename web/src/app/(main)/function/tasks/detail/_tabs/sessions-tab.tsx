@@ -20,6 +20,7 @@ import {
 import { toast } from "sonner";
 
 import { ApprovalExecutionFocus } from "@/components/approval-execution-focus";
+import { HumanImageReview } from "@/components/human-image-review";
 import { MentionTextarea } from "@/components/mention-textarea";
 import { SideQuestionButton, SideQuestionWorkspace } from "@/components/side-question-workspace";
 import { TodoPopover } from "@/components/todo-popover";
@@ -602,6 +603,12 @@ export function SessionsTab({ taskId }: { taskId: string }) {
             </ScrollArea>
             {isMain ? (
               <div className="border-t p-3">
+                <HumanImageReview
+                  key={activeResolution?.profile_id ?? "default"}
+                  scope="task"
+                  id={taskId}
+                  attachments={attachments}
+                />
                 {attachments.length > 0 && (
                   <div className="mb-2 flex flex-wrap gap-1.5">
                     {attachments.map((a) => (

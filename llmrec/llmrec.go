@@ -90,11 +90,12 @@ func workerFrom(ctx context.Context) string {
 
 // Recorder wraps an llm.Provider and records every completion call.
 type Recorder struct {
-	inner   llm.Provider
-	pg      *db.DB
-	model   string // model name (from config, not in CompletionRequest)
-	version string
-	prof    string // LLM profile name (from llm_profiles)
+	bodyMode func() string
+	inner    llm.Provider
+	pg       *db.DB
+	model    string // model name (from config, not in CompletionRequest)
+	version  string
+	prof     string // LLM profile name (from llm_profiles)
 	// thinkingType / reasoningEffort 是配置级思考参数(思考开关 / 思考强度)。它们在
 	// norma 的 buildBody() 里从 provider 配置注入真正的 HTTP body,不出现在
 	// CompletionRequest 上,故 Recorder 需在此单独带一份,序列化时写进录制。
@@ -154,7 +155,8 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 	// llm_record setting. Lightweight usage metering always runs — it powers token
 	// stats and must be complete even for interrupted/failed runs, so it is NOT
 	// gated. Only body serialization + response accumulation are skipped when off.
-	recordBodies := r.enabled == nil || r.enabled()
+	mode := r.recordingMode()
+	recordBodies := mode != "off"
 	ctx, surface := NewSurfaceCapture(ctx, r.version)
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
@@ -209,8 +211,8 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			// Lightweight metering row — always written.
 			r.recordUsage(taskID, expID, worker, session, usage, int(time.Since(start).Milliseconds()), status, surface.Snapshot())
 			// Heavy trace row — only when body recording is on.
-			if recordBodies {
-				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
+			if mode == "full" || (mode == "errors" && err != nil) {
+				r.record(mode, req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
 			}
 		}
 		defer func() { finish(ctx.Err()) }()
@@ -262,7 +264,8 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	inFlight.Add(1)
 	defer inFlight.Add(-1)
-	recordBodies := r.enabled == nil || r.enabled()
+	mode := r.recordingMode()
+	recordBodies := mode != "off"
 	ctx, surface := NewSurfaceCapture(ctx, r.version)
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
@@ -292,8 +295,8 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 		status = "error"
 	}
 	r.recordUsage(taskID, expID, worker, session, usage, int(time.Since(start).Milliseconds()), status, surface.Snapshot())
-	if recordBodies {
-		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
+	if mode == "full" || (mode == "errors" && err != nil) {
+		r.record(mode, req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
 	}
 	return msg, stopReason, usage, err
 }
@@ -353,7 +356,7 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker, session strin
 // record persists one LLM call to PostgreSQL before the provider stream returns.
 // Keeping the write inside the owning task operation means task deletion can
 // drain calls and then remove records without a late async insert recreating one.
-func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, reqBody string, capt *Capture, start time.Time, text, thinking string, usage llm.Usage, stopReason string, streamErr error) {
+func (r *Recorder) record(mode string, req llm.CompletionRequest, session, taskID, worker, reqBody string, capt *Capture, start time.Time, text, thinking string, usage llm.Usage, stopReason string, streamErr error) {
 	latency := int(time.Since(start).Milliseconds())
 	status := "ok"
 	errMsg := ""
@@ -403,6 +406,7 @@ func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, re
 		RawResponse: capt.RawResponse(),
 	}
 
+	sanitizeAudit(rec, mode == "errors")
 	if err := r.pg.InsertLLMRecord(rec); err != nil {
 		log.Printf("[llmrec] insert: %v", err)
 	}

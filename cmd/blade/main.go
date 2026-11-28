@@ -89,15 +89,27 @@ func run() int {
 		// 默认**只绑 loopback**（P42）：测绘引擎与个人扫描收录的前提是"扫到你的端口"，
 		// 所以默认不暴露是唯一有效的手段——要对外必须先显式写出来（`-addr :9898`）。
 		// 公网部署的两条正路（Cloudflare Tunnel / SSH 隧道）都不需要它监听公网，见 deploy/。
-		addr    = flag.String("addr", "127.0.0.1:9898", "HTTP listen address (default: loopback only)")
-		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
-		proxy   = flag.String("proxy", "127.0.0.1:9899", "traffic recording proxy address (empty to disable)")
+		consoleCert = flag.String("console-cert", "", "stage a local PEM certificate chain and exit")
+		consoleKey  = flag.String("console-key", "", "private key file for -console-cert")
+		consoleHost = flag.String("console-host", "", "browser hostname/IP for -console-cert")
+		forceHTTP   = flag.Bool("console-http", false, "temporarily use HTTP instead of the saved console TLS configuration")
+		addr        = flag.String("addr", "127.0.0.1:9898", "HTTP listen address (default: loopback only)")
+		dataDir     = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
+		proxy       = flag.String("proxy", "127.0.0.1:9899", "traffic recording proxy address (empty to disable)")
 		// 只在明确知道自己在做什么时才允许把流量代理开成对外——见下面 run() 里的护栏。
 		allowOpenProxy = flag.Bool("allow-open-proxy", false, "allow binding the traffic proxy to a non-loopback address (turns this host into an unauthenticated open proxy)")
 		mobileProxy    = flag.String("mobile-proxy", "", "optional authenticated LAN mobile proxy listen address (e.g. 0.0.0.0:19899)")
 		mobileCIDRs    = flag.String("mobile-proxy-cidrs", "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16", "comma-separated allowed client CIDRs for -mobile-proxy")
 	)
 	flag.Parse()
+	if *consoleCert != "" || *consoleKey != "" || *consoleHost != "" {
+		if err := server.StageConsolePEM(config.BaseDir(), *consoleHost, *consoleCert, *consoleKey); err != nil {
+			log.Printf("stage console certificate: %v", err)
+			return 1
+		}
+		log.Print("候选证书已保存，可在控制台设置中启用")
+		return 0
+	}
 
 	// ---- 暴露面护栏（P42）----
 	//
@@ -196,10 +208,16 @@ func run() int {
 	server.ApplyStoredLogLevel(mgr.PG())
 	// 重启恢复：把 PG 里已准入的任务重新拉起（构造器只装配，不在这里恢复——
 	// 见 Server.RestoreTaskRuntimes 的注释）。
+	consoleTLS, err := srv.ConsoleTLSConfig(*forceHTTP)
+	if err != nil {
+		log.Printf("console TLS: %v", err)
+		return 1
+	}
 	srv.RestoreTaskRuntimes()
 	httpSrv := &http.Server{
-		Addr:    *addr,
-		Handler: srv.Handler(),
+		Addr:      *addr,
+		TLSConfig: consoleTLS,
+		Handler:   srv.Handler(),
 		// 请求头 10s：慢速握手（slowloris）在读完首行之前就被挡掉。
 		ReadHeaderTimeout: 10 * time.Second,
 		// 读整个请求（含体）30s。本服务的请求体都是小 JSON；请求读完之后不再读，
@@ -221,7 +239,13 @@ func run() int {
 		log.Printf("BLADE %s backend listening on %s (data=%s, workers=%d)", version, *addr, *dataDir, mgr.Workers())
 		settle := time.AfterFunc(selfupdate.SettleDelay, selfupdate.Settle)
 		defer settle.Stop()
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if consoleTLS != nil {
+			err = httpSrv.ListenAndServeTLS("", "")
+		} else {
+			err = httpSrv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
 		}
 	}()

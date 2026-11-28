@@ -1082,6 +1082,32 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/auth/change-password") return { ok: true };
   if (path === "/auth/account") return { username: "BLADE" };
   if (path === "/system/info") return { ok: true, service: "blade", version: "0.9.33-demo" };
+  if (path === "/update/status")
+    return { current: "0.9.33-demo", running: false, progress: { phase: "idle", percent: -1, message: "" } };
+  if (path === "/system/tls") {
+    if (m === "GET") return { serving: false };
+    throw new Error("证书配置需要连接 BLADE 服务。");
+  }
+  if (path === "/chat/vision") {
+    if (m === "POST") throw new Error("读图测试需要配置真实模型。");
+    return { model: "演示配置", status: "unknown" };
+  }
+  if (seg[0] === "companies" && seg[2] === "knowledge-packs") {
+    if (m === "GET") return seg.length === 3 ? { packs: [], can_review: false } : { entries: [], next: "" };
+    throw new Error("知识包审核需要连接 BLADE 服务。");
+  }
+  if (seg[0] === "tasks" && seg[2] === "llm" && seg[3] === "preview" && m === "GET") {
+    const t = mockTasks.find((x) => x.id === seg[1]);
+    if (!t) throw new Error("任务不存在");
+    const role = q.get("role");
+    if (role !== "mainagent" && role !== "planner" && role !== "worker") throw new Error("未知角色");
+    return {
+      expected: mockRoleResolution(t, role),
+      skills: [],
+      prompt: "演示数据没有运行时提示词。",
+      prompt_source: "演示配置",
+    };
+  }
   if (path === "/update/check") return { current: "0.9.33-demo", latest: "0.9.33-demo", has_update: false };
   if (path === "/inbox" && m === "GET") {
     return {

@@ -48,6 +48,7 @@ func (s *Server) registerWorkspaceRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/tasks/{id}/constraints/{cid}/apply", s.applyConstraint)
 	mux.HandleFunc("POST /api/tasks/{id}/control", s.control)
 	mux.HandleFunc("PUT /api/tasks/{id}/llm", s.updateTaskLLMProfiles)
+	mux.HandleFunc("GET /api/tasks/{id}/llm/preview", s.taskModelPreview)
 	mux.HandleFunc("GET /api/tasks/{id}/llm/resolution", s.taskLLMResolutionHandler)
 	mux.HandleFunc("GET /api/tasks/{id}/worker-slots", s.workerSlots) // fixed N worker slots (sessions reused across intents)
 	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/control", s.controlIntent)

@@ -23,9 +23,10 @@ var safeChatID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // to the chat's working dir (e.g. "uploads/report.txt"), which is the agent's CWD, so
 // it can Read/Bash the file directly; Name/Size drive the UI card.
 type chatAttachment struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
-	Size int64  `json:"size"`
+	ImageMIME string `json:"image_mime,omitempty"`
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
 	// Abs 是落盘的绝对路径(m.dir 已是绝对)。建任务前暂存(scope=staging)时前端要用它把
 	// 提示词写进描述;task/session 走 composeAgentMessage 在后端拼路径,不依赖此字段。
 	Abs string `json:"abs,omitempty"`
@@ -101,7 +102,18 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		base := filepath.Base(dest)
-		out = append(out, chatAttachment{Name: base, Path: "uploads/" + base, Size: hdr.Size, Abs: dest})
+		attachment := chatAttachment{Name: base, Path: "uploads/" + base, Size: hdr.Size, Abs: dest}
+		if f, e := os.Open(dest); e == nil {
+			var prefix [512]byte
+			n, _ := f.Read(prefix[:])
+			f.Close()
+			mime := http.DetectContentType(prefix[:n])
+			switch mime {
+			case "image/png", "image/jpeg", "image/webp":
+				attachment.ImageMIME = mime
+			}
+		}
+		out = append(out, attachment)
 	}
 	writeJSON(w, 200, map[string]any{"attachments": out})
 }

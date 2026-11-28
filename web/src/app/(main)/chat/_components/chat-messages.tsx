@@ -6,6 +6,7 @@ import { ArrowUpIcon, Bot, ChevronDownIcon, Loader2Icon, PaperclipIcon, Square, 
 import { toast } from "sonner";
 
 import { ApprovalExecutionFocus, useApprovalFocus, useApprovalHistory } from "@/components/approval-execution-focus";
+import { HumanImageReview } from "@/components/human-image-review";
 import { MentionTextarea } from "@/components/mention-textarea";
 import { SideQuestionButton, SideQuestionWorkspace } from "@/components/side-question-workspace";
 import { TodoPopover } from "@/components/todo-popover";
@@ -769,6 +770,12 @@ export function ChatView({
         </div>
       </ScrollArea>
 
+      <HumanImageReview
+        key={currentProfileId ?? "default"}
+        scope="session"
+        id={String(conv.id)}
+        attachments={attachments}
+      />
       <Composer
         value={input}
         onChange={setInput}

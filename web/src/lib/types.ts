@@ -1762,6 +1762,7 @@ export type ActivityKind =
 
 // ChatAttachment 是一次上传的文件:path 相对该会话/任务工作目录(即 agent 的 CWD)。
 export interface ChatAttachment {
+  image_mime?: string;
   name: string;
   path: string;
   size: number;
@@ -2320,6 +2321,7 @@ export interface Settings {
   opsec_noise_level: string; // 噪声档位：normal（默认）| quiet（追加潜行纪律）
   /** 证据质量闸：off | warn（默认，只告警）| block（critical/high 关键证据不通过则拒收）。 */
   finding_evidence_verify?: "off" | "warn" | "block";
+  llm_record_mode?: "off" | "errors" | "full";
   llm_record: boolean; // LLM 录制开关（默认关）；关闭时不记录任何 LLM 调用
   // Web search. brave_key_set / tavily_key_set reflect whether a key is stored
   // (the values are never returned). On PUT, send the corresponding field to set/clear.
@@ -4393,4 +4395,9 @@ export interface TaskMobileState {
   pinning_alerts?: PinningAlert[];
   scope_hosts?: string[];
   setup_info?: MobileSetupInfo;
+}
+
+export interface MCPDiscoveryChange {
+  at: string;
+  items: { name: string; added: boolean; removed: boolean; description: boolean; schema: boolean }[];
 }

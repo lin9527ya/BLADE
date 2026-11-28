@@ -69,11 +69,14 @@ GET /api/campaigns/{id}	server.(*Server).getCampaign-fm
 GET /api/campaigns/{id}/attack-chains	server.(*Server).campaignAttackChains-fm
 GET /api/campaigns/{id}/phases	server.(*Server).listCampaignPhases-fm
 GET /api/chat/mentions	server.(*Server).searchChatMentions-fm
+GET /api/chat/vision	server.(*Server).chatVision-fm
 GET /api/commands	server.(*Server).pgListCommands-fm
 GET /api/commands/stats	server.(*Server).pgToolStats-fm
 GET /api/companies	server.(*Server).listCompanies-fm
 GET /api/companies/{id}	server.(*Server).getCompany-fm
 GET /api/companies/{id}/knowledge	server.(*Server).listCompanyKnowledge-fm
+GET /api/companies/{id}/knowledge-packs	server.(*Server).companyPacksAPI-fm
+GET /api/companies/{id}/knowledge-packs/{pack}/entries	server.(*Server).companyPacksAPI-fm
 GET /api/companies/{id}/overview	server.(*Server).companyOverview-fm
 GET /api/conversations	server.(*Server).pgListConversations-fm
 GET /api/conversations/{id}	server.(*Server).pgGetConversation-fm
@@ -214,6 +217,7 @@ GET /api/sync/scopesentry/projects	server.(*Server).syncSSProjects-fm
 GET /api/sync/scopesentry/status	server.(*Server).syncSSStatus-fm
 GET /api/sync/scopesentry/tasks	server.(*Server).syncSSTasks-fm
 GET /api/system/info	server.(*Server).systemInfo-fm
+GET /api/system/tls	server.(*Server).consoleTLSAPI-fm
 GET /api/task-archives	server.(*Server).listTaskArchives-fm
 GET /api/task-archives/{id}	server.(*Server).getTaskArchive-fm
 GET /api/task-archives/{id}/download	server.(*Server).downloadTaskArchive-fm
@@ -242,6 +246,7 @@ GET /api/tasks/{id}/intent-assets	server.(*Server).taskIntentAssets-fm
 GET /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRoutes.func1
 GET /api/tasks/{id}/intercept-rules	server.(*Server).taskInterceptListRules-fm
 GET /api/tasks/{id}/leads	server.(*Server).taskLeadTraces-fm
+GET /api/tasks/{id}/llm/preview	server.(*Server).taskModelPreview-fm
 GET /api/tasks/{id}/llm/resolution	server.(*Server).taskLLMResolutionHandler-fm
 GET /api/tasks/{id}/mobile/logcat	server.(*Server).getTaskMobileLogcat-fm
 GET /api/tasks/{id}/mobile/sandbox	server.(*Server).browseTaskMobileSandbox-fm
@@ -272,6 +277,7 @@ GET /api/traffic/mobile-setup	server.(*Server).getTrafficMobileSetup-fm
 GET /api/traffic/pinning-alerts	server.(*Server).getTrafficPinningAlerts-fm
 GET /api/tunnels	server.(*Server).listTunnels-fm
 GET /api/update/check	server.(*Server).updateCheck-fm
+GET /api/update/status	server.(*Server).updateStatus-fm
 GET /api/update/stream	server.(*Server).updateStream-fm
 GET /api/verification-ledger	server.(*Server).verificationLedger-fm
 GET /api/visibility/skill/{name}	server.(*Server).pgSkillVisibility-fm
@@ -327,10 +333,13 @@ POST /api/campaigns	server.(*Server).createCampaign-fm
 POST /api/campaigns/{id}/phases	server.(*Server).createCampaignPhase-fm
 POST /api/chat	server.(*Server).chat-fm
 POST /api/chat/upload	server.(*Server).chatUpload-fm
+POST /api/chat/vision	server.(*Server).chatVision-fm
 POST /api/cloud/import	server.(*Server).cloudImportApply-fm
 POST /api/cloud/import/preview	server.(*Server).cloudImportPreview-fm
 POST /api/companies	server.(*Server).createCompany-fm
 POST /api/companies/reattribute	server.(*Server).reattribute-fm
+POST /api/companies/{id}/knowledge-packs	server.(*Server).companyPacksAPI-fm
+POST /api/companies/{id}/knowledge-packs/{pack}/review	server.(*Server).companyPacksAPI-fm
 POST /api/companies/{id}/scope	server.(*Server).addCompanyScope-fm
 POST /api/conversations	server.(*Server).pgCreateConversation-fm
 POST /api/conversations/delete/batch	server.(*Server).pgDeleteConversationsBatch-fm
@@ -423,6 +432,7 @@ POST /api/storage/tasks/clean	server.(*Server).cleanStorageTasks-fm
 POST /api/storage/vacuum	server.(*Server).vacuumStorage-fm
 POST /api/sync/scopesentry/datasource	server.(*Server).syncSSDatasource-fm
 POST /api/sync/scopesentry/sync	server.(*Server).syncSSRun-fm
+POST /api/system/tls	server.(*Server).consoleTLSAPI-fm
 POST /api/task-archives/delete/batch	server.(*Server).deleteTaskArchivesBatch-fm
 POST /api/task-archives/restore/batch	server.(*Server).restoreTaskArchivesBatch-fm
 POST /api/task-archives/{id}/restore	server.(*Server).queueTaskArchiveRestore-fm

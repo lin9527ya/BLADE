@@ -1415,7 +1415,17 @@ func (s *Server) pgMCPTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, _ := pathInt(r, "id")
-	tools, err := pg.MCPToolsDetailed(id)
+	var tools []db.MCPTool
+	var change json.RawMessage
+	err := pg.ReadSnapshot(r.Context(), func(view *db.DB) error {
+		var e error
+		tools, e = view.MCPToolsDetailed(id)
+		if e != nil {
+			return e
+		}
+		change, e = view.MCPDiscoveryChange(id)
+		return e
+	})
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -1423,7 +1433,7 @@ func (s *Server) pgMCPTools(w http.ResponseWriter, r *http.Request) {
 	if tools == nil {
 		tools = []db.MCPTool{}
 	}
-	writeJSON(w, 200, map[string]any{"tools": tools})
+	writeJSON(w, 200, map[string]any{"tools": tools, "last_change": change})
 }
 
 // ---------- skills (文件系统) ----------

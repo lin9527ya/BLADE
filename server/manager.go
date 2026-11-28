@@ -417,6 +417,7 @@ type Manager struct {
 	tasks       map[string]*Task
 	active      string
 	trafficOn   bool // 流量捕获开关（默认关；settings.traffic_capture）
+	llmRecMode  string
 	llmRecOn    bool // LLM 录制开关（默认关；settings.llm_record）
 	// 联网搜索开关与来源（默认关；settings.web_search_*）。brave-free 需要 braveKey；tavily 需要 tavilyKey。
 	// webSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关。
@@ -899,6 +900,10 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	m.trafficOn = pg.GetBool(settingTrafficCapture, false)
 	// LLM 录制开关（默认关）。录制器每次调用时读取此标志。
 	m.llmRecOn = pg.GetBool(settingLLMRecord, false)
+	if mode, _, _ := pg.GetSetting("llm_record_mode"); mode == "errors" || mode == "off" || mode == "full" {
+		m.llmRecMode = mode
+		m.llmRecOn = mode != "off"
+	}
 	// Load persisted web-search config (default: off, ddgs).
 	m.webSearchOn = pg.GetBool(settingWebSearchOn, false)
 	if v, ok, _ := pg.GetSetting(settingWebSearchBackend); ok && v != "" {
@@ -987,13 +992,32 @@ func (m *Manager) LLMRecordEnabled() bool {
 	return m.llmRecOn
 }
 
+func (m *Manager) LLMRecordMode() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.llmRecMode != "" {
+		return m.llmRecMode
+	}
+	if m.llmRecOn {
+		return "full"
+	}
+	return "off"
+}
+
 // SetLLMRecordEnabled persists and applies the LLM-record toggle. Effective at
 // once — no applyLLM needed, since the recorder reads the flag on every call.
 func (m *Manager) SetLLMRecordEnabled(on bool) error {
-	if err := m.pg.SetBool(settingLLMRecord, on); err != nil {
+	mode := m.LLMRecordMode()
+	if !on {
+		mode = "off"
+	} else if mode == "off" {
+		mode = "full"
+	}
+	if err := m.pg.SetSettings(map[string]string{settingLLMRecord: strconv.FormatBool(on), "llm_record_mode": mode}); err != nil {
 		return err
 	}
 	m.mu.Lock()
+	m.llmRecMode = mode
 	m.llmRecOn = on
 	m.mu.Unlock()
 	return nil

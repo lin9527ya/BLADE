@@ -1127,49 +1127,100 @@ func (d *DB) MCPToolsDetailed(serverID int64) ([]MCPTool, error) {
 // （否则每次刷新 / 启动自动发现都会把开关悄悄翻回默认——那才是这个开关最危险的失效）。
 // 名字不在新列表里 = 工具已从 server 上消失，开关随之作废；新出现的工具默认启用。
 func (d *DB) SaveMCPTools(serverID int64, tools []MCPTool) error {
+	return d.saveMCPTools(serverID, nil, tools)
+}
+
+// SaveDiscoveredMCPTools rejects responses from a connection superseded by an
+// endpoint edit while discovery was in progress.
+func (d *DB) SaveDiscoveredMCPTools(m *MCPServer, tools []MCPTool) error {
+	return d.saveMCPTools(m.ID, m, tools)
+}
+func (d *DB) saveMCPTools(serverID int64, expected *MCPServer, tools []MCPTool) error {
 	tx, err := d.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	off := map[string]bool{}
-	rows, err := tx.Query(`SELECT tool_name FROM mcp_tools_cache WHERE server_id=$1 AND NOT enabled`, serverID)
+	var locked int64
+	if expected != nil {
+		args, env := string(expected.Args), string(expected.Env)
+		if args == "" {
+			args = "[]"
+		}
+		if env == "" {
+			env = "{}"
+		}
+		err = tx.QueryRow(`SELECT id FROM mcp_servers WHERE id=$1 AND name=$2 AND transport=$3 AND coalesce(command,'')=$4
+ AND args=$5::jsonb AND env=$6::jsonb AND coalesce(url,'')=$7 AND insecure=$8 AND enabled=$9 FOR UPDATE`,
+			serverID, expected.Name, expected.Transport, expected.Command, args, env, expected.URL, expected.Insecure, expected.Enabled).Scan(&locked)
+		if err == sql.ErrNoRows {
+			return errors.New("MCP 配置已变化，请重新刷新")
+		}
+	} else {
+		err = tx.QueryRow(`SELECT id FROM mcp_servers WHERE id=$1 FOR UPDATE`, serverID).Scan(&locked)
+	}
 	if err != nil {
 		return err
 	}
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			rows.Close()
-			return err
-		}
-		off[n] = true
+	if tools == nil {
+		tools = []MCPTool{}
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	data, err := json.Marshal(tools)
+	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM mcp_tools_cache WHERE server_id=$1`, serverID); err != nil {
+	// Diff the catalogs in the same transaction as their replacement. JSONB
+	// comparison ignores object key order and keeps schema changes distinct.
+	_, err = tx.Exec(`WITH previous AS (
+ SELECT tool_name AS name,description,schema FROM mcp_tools_cache WHERE server_id=$1
+), incoming AS (
+ SELECT name,description,schema FROM jsonb_to_recordset($2::jsonb) AS t(name text,description text,schema jsonb)
+), delta AS (
+ SELECT coalesce(p.name,i.name) AS name,p.name IS NULL AS added,i.name IS NULL AS removed,
+ p.name IS NOT NULL AND i.name IS NOT NULL AND p.description IS DISTINCT FROM i.description AS description,
+ p.name IS NOT NULL AND i.name IS NOT NULL AND coalesce(p.schema,'null'::jsonb) IS DISTINCT FROM coalesce(i.schema,'null'::jsonb) AS schema
+ FROM previous p FULL JOIN incoming i USING(name)
+), changes AS (
+ SELECT jsonb_agg(to_jsonb(delta) ORDER BY name) AS items FROM delta WHERE added OR removed OR description OR schema
+)
+UPDATE mcp_discovery_baselines SET last_change=jsonb_build_object('at',now(),'items',changes.items)
+FROM changes WHERE server_id=$1 AND changes.items IS NOT NULL`, serverID, string(data))
+	if err != nil {
 		return err
 	}
-	for _, t := range tools {
-		schema := string(t.Schema)
-		if schema == "" {
-			schema = "null"
-		}
-		if _, err := tx.Exec(`INSERT INTO mcp_tools_cache(server_id, tool_name, description, enabled, schema) VALUES ($1,$2,$3,$4,$5)
-ON CONFLICT (server_id, tool_name) DO UPDATE SET description=EXCLUDED.description, schema=EXCLUDED.schema`,
-			serverID, t.Name, t.Description, !off[t.Name], schema); err != nil {
-			return err
-		}
+	if _, err = tx.Exec(`INSERT INTO mcp_discovery_baselines(server_id) VALUES($1) ON CONFLICT DO NOTHING`, serverID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM mcp_tools_cache WHERE server_id=$1 AND tool_name NOT IN
+(SELECT value->>'name' FROM jsonb_array_elements($2::jsonb))`, serverID, string(data)); err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO mcp_tools_cache(server_id,tool_name,description,enabled,schema)
+SELECT $1,name,description,true,coalesce(schema,'null'::jsonb) FROM jsonb_to_recordset($2::jsonb) t(name text,description text,schema jsonb)
+ON CONFLICT (server_id,tool_name) DO UPDATE SET description=EXCLUDED.description,schema=EXCLUDED.schema`, serverID, string(data))
+	if err != nil {
+		return err
 	}
 	return tx.Commit()
 }
 
 // ClearMCPTools removes all cached tools for a server (e.g. after endpoint or command edits).
 func (d *DB) ClearMCPTools(serverID int64) error {
-	_, err := d.Exec(`DELETE FROM mcp_tools_cache WHERE server_id=$1`, serverID)
-	return err
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`SELECT id FROM mcp_servers WHERE id=$1 FOR UPDATE`, serverID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM mcp_discovery_baselines WHERE server_id=$1`, serverID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM mcp_tools_cache WHERE server_id=$1`, serverID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // RenameMCPToolsPrefix rewrites cached mcp__<old>__<tool> rows after a server rename
@@ -1457,4 +1508,13 @@ ON CONFLICT (agent_id,resource_kind,resource_id,mcp_tool_name) DO UPDATE SET ena
 	}
 	_, err := d.Exec(`DELETE FROM agent_visibility WHERE agent_id=$1 AND resource_kind=$2 AND resource_id=$3`, agentID, kind, resourceID)
 	return err
+}
+
+func (d *DB) MCPDiscoveryChange(id int64) (json.RawMessage, error) {
+	var raw []byte
+	err := d.QueryRow(`SELECT last_change FROM mcp_discovery_baselines WHERE server_id=$1`, id).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return raw, err
 }

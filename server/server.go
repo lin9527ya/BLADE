@@ -27,12 +27,13 @@ var BuildVersion = "dev"
 // Server exposes the BLADE backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
-	m        *Manager
-	engine   *Engine
-	ctx      context.Context
-	sched    *Scheduler
-	imSvc    *imService
-	skillDir string // root directory for skill subdirectories
+	consoleTLS consoleTLS
+	m          *Manager
+	engine     *Engine
+	ctx        context.Context
+	sched      *Scheduler
+	imSvc      *imService
+	skillDir   string // root directory for skill subdirectories
 	// sysMetrics 保存上一次 CPU 采样（/api/metrics 的 system 段用它算占用率）。
 	sysMetrics systemSamplerState
 	side       *sideQuestionState
@@ -242,7 +243,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		log.Fatalf("[auth] JWT key: %v", err)
 	}
 	s := &Server{
-		m: m, engine: NewEngine(m), ctx: ctx, cancel: cancel, skillDir: skillDir,
+		consoleTLS: consoleTLS{dir: filepath.Join(keyDir, ".blade-tls")},
+		m:          m, engine: NewEngine(m), ctx: ctx, cancel: cancel, skillDir: skillDir,
 		chatRuns: chatState{
 			busy:   map[string]bool{},
 			cancel: map[string]context.CancelCauseFunc{},

@@ -17,6 +17,7 @@ require (
 	github.com/projectdiscovery/dnsx v1.2.3
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.58.0
+	golang.org/x/image v0.35.0
 	golang.org/x/net v0.62.0
 	golang.org/x/text v0.43.0
 	modernc.org/sqlite v1.52.0

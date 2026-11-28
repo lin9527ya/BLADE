@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import { CheckIcon, CopyIcon, Loader2Icon, RadioIcon, SearchIcon, Trash2Icon, XIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { TablePagination } from "@/components/table-pagination";
 import {
@@ -20,7 +21,6 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import type { LLMRecordDetail, LLMRecordItem, LLMTask } from "@/lib/types";
@@ -127,7 +127,7 @@ export default function LLMRecordsPage() {
 
   // Recording on/off toggle (settings.llm_record; default off). When off the
   // backend records nothing.
-  const [recEnabled, setRecEnabled] = React.useState(false);
+  const [recMode, setRecMode] = React.useState<"off" | "errors" | "full">("off");
   const [recBusy, setRecBusy] = React.useState(false);
 
   // Inline detail panel (Burp-style split, not a dialog)
@@ -161,7 +161,7 @@ export default function LLMRecordsPage() {
     api
       .settings()
       .then((s) => {
-        if (alive) setRecEnabled(!!s.llm_record);
+        if (alive) setRecMode(s.llm_record_mode ?? (s.llm_record ? "full" : "off"));
       })
       .catch(() => {});
     return () => {
@@ -169,14 +169,14 @@ export default function LLMRecordsPage() {
     };
   }, []);
 
-  const toggleRecording = async (on: boolean) => {
+  const toggleRecording = async (mode: "off" | "errors" | "full") => {
     setRecBusy(true);
-    setRecEnabled(on); // optimistic
+
     try {
-      const s = await api.setSettings({ llm_record: on });
-      setRecEnabled(!!s.llm_record);
+      const s = await api.setSettings({ llm_record_mode: mode });
+      setRecMode(s.llm_record_mode ?? (s.llm_record ? "full" : "off"));
     } catch {
-      setRecEnabled(!on); // revert on failure
+      toast.error("保存录制模式失败");
     } finally {
       setRecBusy(false);
     }
@@ -347,21 +347,17 @@ export default function LLMRecordsPage() {
 
         {/* Recording on/off — off means no LLM calls are recorded */}
         <div className="flex items-center gap-2 rounded-md border px-2.5 py-1">
-          <Switch
-            id="llm-rec-toggle"
-            size="sm"
-            checked={recEnabled}
-            onCheckedChange={toggleRecording}
-            disabled={recBusy}
-          />
-          <label
-            htmlFor="llm-rec-toggle"
-            className={cn(
-              "cursor-pointer select-none font-medium text-xs",
-              recEnabled ? "text-foreground" : "text-muted-foreground",
-            )}
-          >
-            {recEnabled ? "录制中" : "已关闭"}
+          <label>
+            正文录制{" "}
+            <select
+              disabled={recBusy}
+              value={recMode}
+              onChange={(e) => void toggleRecording(e.target.value as typeof recMode)}
+            >
+              <option value="off">仅用量和状态</option>
+              <option value="errors">仅失败留正文</option>
+              <option value="full">完整调试</option>
+            </select>
           </label>
         </div>
 

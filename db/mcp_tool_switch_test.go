@@ -127,3 +127,76 @@ func TestMCPToolSwitch(t *testing.T) {
 		t.Fatalf("重新启用后不该还有停用项，实际 %d", disabled)
 	}
 }
+
+func TestMCPDiscoveryChangePreservesLastRealDiff(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	id, err := d.SaveMCP(&MCPServer{Name: "discovery-diff-test", Transport: "stdio", Command: "echo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.DeleteMCP(id)
+	save := func(tools ...MCPTool) {
+		t.Helper()
+		if err := d.SaveMCPTools(id, tools); err != nil {
+			t.Fatal(err)
+		}
+	}
+	last := func() string {
+		t.Helper()
+		v, err := d.MCPDiscoveryChange(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(v)
+	}
+	a := MCPTool{Name: "a", Description: "A", Schema: json.RawMessage(`{"type":"object","properties":{}}`)}
+	b := MCPTool{Name: "b"}
+	save(a, b)
+	if last() != "" {
+		t.Fatal("unexpected first alert")
+	}
+	a.Schema = json.RawMessage(`{"properties":{},"type":"object"}`)
+	save(b, a)
+	if last() != "" {
+		t.Fatal("ordering caused alert")
+	}
+	if err = d.SetMCPToolEnabled(id, "a", false); err != nil {
+		t.Fatal(err)
+	}
+	a.Description = "revised"
+	a.Schema = json.RawMessage(`{"type":"number"}`)
+	save(a, MCPTool{Name: "c"})
+	diff := last()
+	var change struct {
+		Items []struct {
+			Name                                string
+			Added, Removed, Description, Schema bool
+		}
+	}
+	if err = json.Unmarshal([]byte(diff), &change); err != nil || len(change.Items) != 3 {
+		t.Fatalf("%s %v", diff, err)
+	}
+	if !change.Items[0].Description || !change.Items[0].Schema || !change.Items[1].Removed || !change.Items[2].Added {
+		t.Fatal(diff)
+	}
+	save(MCPTool{Name: "c"}, a)
+	if last() != diff {
+		t.Fatal("unchanged refresh replaced last change")
+	}
+	rows, err := d.MCPToolsDetailed(id)
+	if err != nil || rows[0].Enabled {
+		t.Fatalf("switch %+v %v", rows, err)
+	}
+	if err = d.ClearMCPTools(id); err != nil {
+		t.Fatal(err)
+	}
+	save()
+	save(a)
+	if last() == "" {
+		t.Fatal("an empty successful discovery is a valid baseline")
+	}
+}

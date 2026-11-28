@@ -357,22 +357,10 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 		// and to know which MCP servers are skill-gated). ---
 		var reg *skill.Registry
 		if names, _ := pg.AgentSkillNames(a.ID); len(names) > 0 {
-			nameSet := make(map[string]bool, len(names))
-			for _, n := range names {
-				nameSet[n] = true
-			}
 			if allReg, err := skill.LoadDir(skillDir); err == nil && allReg != nil {
-				reg = skill.NewRegistry()
-				for _, s := range allReg.List() {
-					// match by directory name (Base of Dir), not by skill display Name
-					if s.Dir != "" && nameSet[filepath.Base(s.Dir)] {
-						reg.Add(s)
-					}
-				}
-				if len(reg.List()) == 0 {
-					reg = nil
-				}
+				reg = visibleSkillRegistry(allReg, names)
 			}
+
 		}
 		// --- 常驻技能（分层注入的常量层）：正文整段预渲染，随 DeferredInfo 注入 system
 		// 稳定段（在 deferred 工具块之前、同属缓存前缀）——「规则一律常驻」，不依赖模型
@@ -540,6 +528,31 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 	agent.SetOverrides(o)
 }
 
+func visibleSkillRegistry(all *skill.Registry, names []string) *skill.Registry {
+	visible := make(map[string]bool, len(names))
+	for _, name := range names {
+		visible[name] = true
+	}
+	reg := skill.NewRegistry()
+	for _, item := range all.List() {
+		if item.Dir != "" && visible[filepath.Base(item.Dir)] {
+			reg.Add(item)
+		}
+	}
+	if len(reg.List()) == 0 {
+		return nil
+	}
+	return reg
+}
+
+func indexSkillDescription(description, when string) string {
+	description = strings.TrimSpace(description)
+	if description == "" {
+		description = strings.TrimSpace(when)
+	}
+	return firstSemanticUnit(description)
+}
+
 // renderCapabilityIndex is a compact, cache-stable table of what this agent can
 // reach: visible skills (name + description) and connected MCP servers (name +
 // tool count). Full instructions still come from Skill(name); this is only a
@@ -556,14 +569,11 @@ func renderCapabilityIndex(reg *skill.Registry, serverTools map[string][]string)
 		if len(skills) > 0 {
 			b.WriteString("技能：\n")
 			for _, s := range skills {
-				desc := strings.TrimSpace(s.Description)
-				if desc == "" {
-					desc = strings.TrimSpace(s.WhenToUse)
-				}
+				desc := indexSkillDescription(s.Description, s.WhenToUse)
 				if desc == "" {
 					desc = "（无描述）"
 				}
-				b.WriteString("- " + s.Name + "：" + firstSemanticUnit(desc) + "\n")
+				b.WriteString("- " + s.Name + "：" + desc + "\n")
 			}
 		}
 	}

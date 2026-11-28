@@ -33,7 +33,9 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 		result.Reason = "LLM 配置未设置 API Key"
 		return result
 	}
-	if _, _, ok := s.providerForProfile(p.ID); !ok {
+	// Configuration previews must not populate provider caches or reset a shared rate limiter.
+	copy := *p
+	if _, err := validateAndNormalizeProfile(&copy); err != nil {
 		result.Reason = "LLM 配置格式或参数无效"
 		return result
 	}

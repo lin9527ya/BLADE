@@ -64,7 +64,7 @@ services:
       - SETUID
       - KILL           # 整组杀 agent 起的子进程（run_execution / 自定义工具）
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9898/api/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9898/api/health || curl -kfsS https://127.0.0.1:9898/api/health || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -72,6 +72,7 @@ services:
     volumes:
       # 把数据目录（含 jwt.key、SQLite 等）绑定到项目根目录的 data/，
       # 方便在宿主机直接查看/备份，容器重建也不丢。
+      - console_tls:/app/.blade-tls
       - ./data:/app/data
       # 把项目根目录的 skills 挂进容器（覆盖镜像内置的 /app/skills）；
       # 改 skill 无需重建镜像，容器读的就是宿主机这份。
@@ -103,4 +104,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  console_tls:
   pgdata:
