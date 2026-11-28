@@ -73,8 +73,62 @@ func TestBlackboardViewBoundedAndDetail(t *testing.T) {
 	}
 }
 
-// blackboard_view 的 after/limit 是真实事件游标：limit=1 时 has_more 为真，
-// next_cursor 指向返回的最后一条，下一次只能看到更晚的节点。
+func TestBlackboardProjectionReadMetadata(t *testing.T) {
+	tools, ts, _ := newToolWorker(t)
+	base, err := ts.BlackboardVersion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const goalCount = 21
+	for range goalCount {
+		if _, err := ts.AddGoal(map[string]any{"text": "review observation"}, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	latest, err := ts.BlackboardVersion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstChange := base
+	firstChange.Revision++
+	stale := base
+	stale.Epoch = "previous"
+	for _, tc := range []struct {
+		name   string
+		view   map[string]any
+		cursor string
+		goals  int
+		state  string
+	}{
+		{"initial", tools.blackboardViewData(0, 1), latest.Cursor(), 20, "truncated"},
+		{"forward", tools.blackboardViewData(0, 1, base.Cursor()), firstChange.Cursor(), 20, "truncated"},
+		{"delta", tools.blackboardDeltaData(0, 1, base.Cursor()), firstChange.Cursor(), goalCount, "complete"},
+		{"resync", tools.blackboardDeltaData(0, 1, stale.Cursor()), latest.Cursor(), 20, "truncated"},
+		{"detail", tools.graphOverviewData(), latest.Cursor(), goalCount, "complete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.view["revision"] != latest.RevisionString() || tc.view["change_cursor"] != tc.cursor {
+				t.Fatalf("revision=%v cursor=%v, want %s and %s", tc.view["revision"], tc.view["change_cursor"], latest.RevisionString(), tc.cursor)
+			}
+			if tc.name != "detail" {
+				board, _ := tc.view["blackboard"].(map[string]any)
+				if board["revision"] != tc.view["revision"] || tc.view["resync_required"] != (tc.name == "resync") {
+					t.Fatalf("blackboard revision=%v resync_required=%v", board["revision"], tc.view["resync_required"])
+				}
+			}
+			status, _ := tc.view["read_status"].(map[string]any)
+			sections, _ := status["sections"].(map[string]db.ReadStatus)
+			goals := sections["goals"]
+			rows, _ := tc.view["goals"].([]map[string]any)
+			if status["state"] != "complete" || goals.State != tc.state || goals.Total == nil || *goals.Total != goalCount ||
+				len(rows) != tc.goals || goals.SampleCount != len(rows) {
+				t.Fatalf("goals=%d read_status=%+v", len(rows), status)
+			}
+		})
+	}
+}
+
+// The legacy after/next_cursor pair tracks node IDs, independently of change_cursor.
 func TestBlackboardViewEventCursor(t *testing.T) {
 	tools, ts, _ := newToolWorker(t)
 	for i := 0; i < 3; i++ {

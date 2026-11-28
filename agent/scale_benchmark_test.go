@@ -33,8 +33,11 @@ func BenchmarkBlackboardViewScale(b *testing.B) {
 			b.ResetTimer()
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				if out := ts.blackboardViewData(0, 20); out == nil {
-					b.Fatal("empty projection")
+				out := ts.blackboardViewData(0, 20)
+				status, _ := out["read_status"].(map[string]any)
+				// CreateTask also seeds one origin fact.
+				if status["state"] != "complete" || out["facts"] != size+1 {
+					b.Fatalf("invalid projection: facts=%v status=%v error=%v", out["facts"], status, out["error"])
 				}
 			}
 		})

@@ -109,21 +109,14 @@ func (s *ExplorationStore) BlackboardChanges(ctx context.Context, cursor string,
 			after = sequence
 		}
 	}
-	var oldest sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `SELECT min(seq) FROM blackboard_events WHERE exploration_id=$1 AND epoch=$2`, s.expID, version.Epoch).Scan(&oldest); err != nil {
+	// Sequences are unique and contiguous at publication. This exact page
+	// total also detects missing history anywhere after the supplied cursor.
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM blackboard_events WHERE exploration_id=$1 AND epoch=$2 AND seq>$3 AND seq<=$4`, s.expID, version.Epoch, after, version.Revision).Scan(&total); err != nil {
 		return out, err
 	}
-	if cursor != "" && oldest.Valid && after < oldest.Int64-1 {
+	if cursor != "" && total != version.Revision-after {
 		out.Resync = true
-	}
-	if cursor != "" && !out.Resync {
-		var remaining int64
-		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM blackboard_events WHERE exploration_id=$1 AND epoch=$2 AND seq>$3 AND seq<=$4`, s.expID, version.Epoch, after, version.Revision).Scan(&remaining); err != nil {
-			return out, err
-		}
-		if remaining != version.Revision-after {
-			out.Resync = true
-		}
 	}
 	if cursor == "" || out.Resync {
 		out.Cursor = version.Cursor()
@@ -158,10 +151,6 @@ func (s *ExplorationStore) BlackboardChanges(ctx context.Context, cursor string,
 		out.Cursor = current.Cursor()
 	}
 	s.enrichChanges(ctx, out.Changes)
-	var total int64
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM blackboard_events WHERE exploration_id=$1 AND epoch=$2 AND seq>$3 AND seq<=$4`, s.expID, version.Epoch, after, version.Revision).Scan(&total); err != nil {
-		return out, err
-	}
 	out.Status = ReadSetStatus(total, len(out.Changes), "blackboard_view(change_cursor)")
 	return out, nil
 }

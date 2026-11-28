@@ -691,6 +691,7 @@ func (t *ToolSet) blackboardDeltaCore(after int64, limit int, changes db.Blackbo
 	out["events"] = events
 	bbMeta := map[string]any{
 		"node_revision":      revision,
+		"revision":           changes.Revision,
 		"legacy_node_cursor": true,
 		"cursor":             after,
 		"has_more":           hasMore,
@@ -704,10 +705,10 @@ func (t *ToolSet) blackboardDeltaCore(after int64, limit int, changes db.Blackbo
 	}
 	out["blackboard"] = bbMeta
 	out["changes"] = changes.Changes
+	out["revision"] = changes.Revision
+	out["change_cursor"] = changes.Cursor
 	out["changes_status"] = changes.Status
 	out["resync_required"] = false
 	t.projectionContract(out)
-	bbMeta["revision"] = out["revision"]
-	out["change_cursor"] = changes.Cursor
 	return out
 }

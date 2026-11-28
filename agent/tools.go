@@ -783,6 +783,10 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	return t.snapshotProjection(func(view *ToolSet) map[string]any {
 		out := view.graphOverviewDataInternal()
 		view.projectionContract(out)
+		if version, err := view.ts.BlackboardVersion(context.Background()); err == nil {
+			out["revision"] = version.RevisionString()
+			out["change_cursor"] = version.Cursor()
+		}
 		return out
 	})
 }
@@ -838,7 +842,6 @@ func (t *ToolSet) blackboardViewInternal(after int64, limit int, deltaOnly bool,
 	}
 	// Full bounded path: used on Turn 1, explicit full view, resync, and every 5th reconcile round.
 	out := t.graphOverviewDataInternalWithAttention(true)
-	t.projectionContract(out)
 	// Capture totals, full route aggregation, and compact related_tasks summary
 	// BEFORE pruning/truncating display windows so routes reflect the true graph
 	// rather than only the truncated window.
@@ -998,7 +1001,7 @@ func (t *ToolSet) blackboardViewInternal(after int64, limit int, deltaOnly bool,
 	out["routes"] = routes
 	bbMeta := map[string]any{
 		"node_revision":      revision,
-		"revision":           out["revision"],
+		"revision":           changes.Revision,
 		"legacy_node_cursor": true,
 		"cursor":             after,
 		"has_more":           hasMore,
@@ -1011,12 +1014,11 @@ func (t *ToolSet) blackboardViewInternal(after int64, limit int, deltaOnly bool,
 	}
 	out["blackboard"] = bbMeta
 	out["changes"] = changes.Changes
+	out["revision"] = changes.Revision
 	out["change_cursor"] = changes.Cursor
 	out["changes_status"] = changes.Status
 	out["resync_required"] = changes.Resync
 	t.projectionContract(out)
-	// The forward page cursor is the last returned change, not the newest revision.
-	out["change_cursor"] = changes.Cursor
 	return out
 }
 

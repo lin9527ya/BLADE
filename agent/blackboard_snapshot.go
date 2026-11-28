@@ -72,8 +72,4 @@ func (t *ToolSet) projectionContract(out map[string]any) {
 		}
 	}
 	out["read_status"] = map[string]any{"state": "complete", "sections": sections, "note": "complete表示本快照读取成功，各节窗口完整性独立标注；不是探索已完成"}
-	if v, err := t.ts.BlackboardVersion(context.Background()); err == nil {
-		out["revision"] = v.RevisionString()
-		out["change_cursor"] = v.Cursor()
-	}
 }
