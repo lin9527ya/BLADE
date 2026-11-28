@@ -154,6 +154,19 @@ type MobileReportProfile struct {
 	BoundDeviceModel string
 	CandidateDomains []string
 	StaticFindings   []MobileStaticFindingSummary
+	MiniApp          *MiniAppReportProfile
+}
+
+// MiniAppReportProfile 汇总微信小程序样本专属基线。
+type MiniAppReportProfile struct {
+	AppID              string
+	ContainerType      string
+	EncryptionDetected bool
+	RoutesCount        int
+	SubPackagesCount   int
+	CloudEnvs          []string
+	CloudFunctions     []string
+	CloudCollections   []string
 }
 
 // detectionView 是检测验证节点渲染所需的最小字段集。
@@ -526,8 +539,18 @@ func writeMobileProfileSection(b *strings.Builder, m *MobileReportProfile) {
 	if len(m.Packers) > 0 {
 		fmt.Fprintf(b, "- **加固/壳特征**：%s\n", strings.Join(m.Packers, ", "))
 	}
-	fmt.Fprintf(b, "- **Manifest 安全属性**：debuggable=`%v` · allowBackup=`%v` · usesCleartextTraffic=`%v`\n",
-		m.Debuggable, m.AllowBackup, m.UsesCleartext)
+	if strings.EqualFold(m.Platform, "miniapp") && m.MiniApp != nil {
+		fmt.Fprintf(b, "- **小程序容器与路由**：AppID `%s` · 容器形态 `%s`（加密=%v）· 页面路由 **%d** 条（分包 **%d** 个）\n",
+			nz(m.MiniApp.AppID, m.PackageName), nz(m.MiniApp.ContainerType, "plain"), m.MiniApp.EncryptionDetected,
+			m.MiniApp.RoutesCount, m.MiniApp.SubPackagesCount)
+		if len(m.MiniApp.CloudEnvs) > 0 || len(m.MiniApp.CloudFunctions) > 0 || len(m.MiniApp.CloudCollections) > 0 {
+			fmt.Fprintf(b, "- **CloudBase 云开发资产**：环境 `%s` · 云函数 **%d** 个 · 数据集合 **%d** 个\n",
+				strings.Join(m.MiniApp.CloudEnvs, "`, `"), len(m.MiniApp.CloudFunctions), len(m.MiniApp.CloudCollections))
+		}
+	} else {
+		fmt.Fprintf(b, "- **Manifest 安全属性**：debuggable=`%v` · allowBackup=`%v` · usesCleartextTraffic=`%v`\n",
+			m.Debuggable, m.AllowBackup, m.UsesCleartext)
+	}
 	if m.BoundDeviceID != "" {
 		fmt.Fprintf(b, "- **动态验证设备**：`%s`%s\n", m.BoundDeviceID, func() string {
 			if m.BoundDeviceModel != "" {

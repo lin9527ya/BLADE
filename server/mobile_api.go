@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -498,6 +499,7 @@ func (a *mobileBridgeAdapter) Audit(ctx context.Context, taskID int64, kind stri
 	}
 	var params struct {
 		Package     string `json:"package"`
+		AppID       string `json:"appid"`
 		SamplePath  string `json:"sample_path"`
 		Mode        string `json:"mode"`
 		SkipApktool bool   `json:"skip_apktool"`
@@ -516,7 +518,11 @@ func (a *mobileBridgeAdapter) Audit(ctx context.Context, taskID int64, kind stri
 
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "decompile_audit":
-		rep, err := a.s.runTaskDecompileAudit(ctx, taskID, params.SamplePath, params.Mode, params.SkipApktool)
+		hintAppID := strings.TrimSpace(params.AppID)
+		if hintAppID == "" {
+			hintAppID = cfg.AppPackageName
+		}
+		rep, err := a.s.runTaskDecompileAudit(ctx, taskID, params.SamplePath, params.Mode, params.SkipApktool, hintAppID)
 		if err != nil {
 			return "", err
 		}
@@ -659,6 +665,7 @@ func (s *Server) registerMobileRoutes(mux routeRegistrar) {
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/frida/stop", s.stopTaskFridaSession)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/frida/rpc", s.invokeTaskMobileFridaRPC)
 	mux.HandleFunc("GET /api/tasks/{id}/mobile/screen", s.getTaskMobileScreen)
+	mux.HandleFunc("GET /api/tasks/{id}/mobile/screenshots/{name}", s.getTaskMobileScreenshot)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/ui", s.runTaskMobileUI)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/ui-crawl", s.runTaskMobileUICrawl)
 	mux.HandleFunc("POST /api/tasks/{id}/mobile/ipc-probe", s.runTaskMobileIPCProbe)
@@ -826,6 +833,8 @@ func (s *Server) getTaskMobileState(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	decompileAudit := s.loadPersistedDecompileAudit(taskID)
+	screenshots := s.listTaskScreenshots(taskID)
 	writeJSON(w, 200, map[string]any{
 		"task_id":          t.ID,
 		"app_mode":         cfg.AppMode,
@@ -833,6 +842,8 @@ func (s *Server) getTaskMobileState(w http.ResponseWriter, r *http.Request) {
 		"app_package_name": cfg.AppPackageName,
 		"app_sample_paths": cfg.AppSamplePaths,
 		"manifest":         manifest,
+		"decompile_audit":  decompileAudit,
+		"screenshots":      screenshots,
 		"mobile_device_id": cfg.MobileDeviceID,
 		"proxy_mode":       cfg.MobileProxyMode,
 		"bound_device":     boundDev,
@@ -1464,7 +1475,7 @@ func (s *Server) runTaskStaticAudit(taskID int64, requestedSample string) (*mobi
 	return meta, nil
 }
 
-func (s *Server) runTaskDecompileAudit(ctx context.Context, taskID int64, requestedSample, mode string, skipApktool bool) (*mobile.DecompileAuditReport, error) {
+func (s *Server) runTaskDecompileAudit(ctx context.Context, taskID int64, requestedSample, mode string, skipApktool bool, hintAppID string) (*mobile.DecompileAuditReport, error) {
 	targetAbs, cfg, err := s.resolveTaskSampleAbs(taskID, requestedSample)
 	if err != nil {
 		return nil, err
@@ -1476,6 +1487,7 @@ func (s *Server) runTaskDecompileAudit(ctx context.Context, taskID int64, reques
 	rep, err := mobile.DecompileAndAudit(ctx, targetAbs, taskRoot, mobile.DecompileOptions{
 		Mode:        mode,
 		SkipApktool: skipApktool,
+		HintAppID:   fallbackStr(hintAppID, cfg.AppPackageName),
 	})
 	if err != nil {
 		return nil, err
@@ -1540,16 +1552,94 @@ func (s *Server) handleTaskMobileDecompileAudit(w http.ResponseWriter, r *http.R
 	}
 	var req struct {
 		SamplePath  string `json:"sample_path"`
+		AppID       string `json:"appid"`
 		Mode        string `json:"mode"`
 		SkipApktool bool   `json:"skip_apktool"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	rep, err := s.runTaskDecompileAudit(r.Context(), taskID, req.SamplePath, req.Mode, req.SkipApktool)
+	rep, err := s.runTaskDecompileAudit(r.Context(), taskID, req.SamplePath, req.Mode, req.SkipApktool, req.AppID)
 	if err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "audit": rep})
+}
+
+func (s *Server) loadPersistedDecompileAudit(taskID int64) *mobile.DecompileAuditReport {
+	if taskID <= 0 || strings.TrimSpace(s.m.dir) == "" {
+		return nil
+	}
+	p := filepath.Join(s.m.dir, "tasks", strconv.FormatInt(taskID, 10), "mobile_audit", "report.json")
+	raw, err := os.ReadFile(p)
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	var rep mobile.DecompileAuditReport
+	if json.Unmarshal(raw, &rep) != nil {
+		return nil
+	}
+	return &rep
+}
+
+func (s *Server) listTaskScreenshots(taskID int64) []string {
+	if taskID <= 0 || strings.TrimSpace(s.m.dir) == "" {
+		return nil
+	}
+	shotDir := filepath.Join(s.m.dir, "tasks", strconv.FormatInt(taskID, 10), "screenshots")
+	entries, err := os.ReadDir(shotDir)
+	if err != nil {
+		return nil
+	}
+	type shotItem struct {
+		name  string
+		mtime int64
+	}
+	var items []shotItem
+	for _, ent := range entries {
+		if ent.IsDir() || !strings.HasSuffix(strings.ToLower(ent.Name()), ".png") {
+			continue
+		}
+		if info, ierr := ent.Info(); ierr == nil {
+			items = append(items, shotItem{name: ent.Name(), mtime: info.ModTime().UnixNano()})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].mtime != items[j].mtime {
+			return items[i].mtime > items[j].mtime
+		}
+		return items[i].name > items[j].name
+	})
+	if len(items) > 20 {
+		items = items[:20]
+	}
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.name
+	}
+	return out
+}
+
+func (s *Server) getTaskMobileScreenshot(w http.ResponseWriter, r *http.Request) {
+	taskID, ok := parseTaskIDOr404(s, w, r)
+	if !ok {
+		return
+	}
+	rawName := strings.TrimSpace(r.PathValue("name"))
+	if rawName == "" || strings.Contains(rawName, "/") || strings.Contains(rawName, `\`) || strings.Contains(rawName, "..") || !strings.HasSuffix(strings.ToLower(rawName), ".png") {
+		writeErr(w, 400, "非法截图文件名")
+		return
+	}
+	shotDir := filepath.Join(s.m.dir, "tasks", strconv.FormatInt(taskID, 10), "screenshots")
+	target := filepath.Join(shotDir, filepath.Base(rawName))
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		writeErr(w, 404, "截图不存在")
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(200)
+	_, _ = w.Write(raw)
 }
 
 func (s *Server) runTaskMobileIPCFuzz(w http.ResponseWriter, r *http.Request) {

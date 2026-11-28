@@ -4096,6 +4096,23 @@ export interface MobilePackageMetadata {
   inspected_at_unix: number;
   split_apk_names?: string[];
   network_sec_trust_user?: boolean;
+  miniapp?: MiniAppSummary;
+}
+
+export interface MiniAppSummary {
+  appid?: string;
+  container_type?: string;
+  encryption_detected?: boolean;
+  package_count?: number;
+  file_count?: number;
+  routes?: string[];
+  sub_packages?: string[];
+  plugins?: string[];
+  cloud_envs?: string[];
+  cloud_functions?: string[];
+  cloud_collections?: string[];
+  map_keys?: string[];
+  has_compiled_template?: boolean;
 }
 
 export interface AppUploadItem {
@@ -4297,15 +4314,29 @@ export interface DecompiledEndpoint {
 
 export interface DecompiledSecret {
   kind: string;
-  preview: string;
+  masked: string;
+  entropy?: number;
   file: string;
   line: number;
+  snippet?: string;
+}
+
+export interface DecompiledCodeRisk {
+  id: string;
+  category: string;
+  severity: string;
+  masvs?: string;
+  title: string;
+  file: string;
+  line: number;
+  snippet: string;
 }
 
 export interface DecompiledSignCandidate {
-  symbol: string;
+  hint: string;
   file: string;
   line: number;
+  snippet: string;
 }
 
 export interface DecompileAuditReport {
@@ -4322,6 +4353,7 @@ export interface DecompileAuditReport {
   scanned_files: number;
   endpoints?: DecompiledEndpoint[];
   secrets?: DecompiledSecret[];
+  risks?: DecompiledCodeRisk[];
   sign_candidates?: DecompiledSignCandidate[];
 }
 
@@ -4332,6 +4364,8 @@ export interface TaskMobileState {
   app_package_name?: string;
   app_sample_paths?: string[];
   manifest?: MobilePackageMetadata;
+  decompile_audit?: DecompileAuditReport | null;
+  screenshots?: string[];
   mobile_device_id?: string;
   proxy_mode?: string;
   bound_device?: MobileDevice;

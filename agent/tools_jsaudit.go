@@ -426,11 +426,152 @@ def audit_js(url, outdir, seen_dirs):
                       "error": str(e)[:120]})
     return (1 if found else 0), chunk_candidates(js, final), secrets_n + total, eps_n
 
+def extract_miniapp_dir(root, appid, outdir):
+    import hashlib
+    MINI_EXT = (".js", ".json", ".wxml", ".wxss", ".wxs", ".html", ".ts", ".map", ".txt", ".yaml", ".yml")
+    MINI_PATTERNS = [
+        ("app_secret", re.compile(r'(?i)(?:app[_-]?secret|appsecret)["\']?\s*[:=]\s*["\']([0-9a-f]{32})["\']')),
+        ("wechat_appid", re.compile(r'wx[0-9a-f]{16}')),
+        ("cloud_env", re.compile(r'(?i)\benv\s*:\s*["\']([a-zA-Z0-9][a-zA-Z0-9\-_]{4,40})["\']')),
+        ("cloud_fn", re.compile(r'wx\.cloud\.callFunction\s*\(\s*\{[^}]{0,200}?name\s*:\s*["\']([^"\']{1,80})["\']')),
+        ("collection", re.compile(r'\.collection\s*\(\s*["\']([^"\']{1,80})["\']')),
+        ("tencent_map_key", re.compile(r'[A-Z0-9]{4,6}-[A-Z0-9]{4,6}-[A-Z0-9]{4,6}-[A-Z0-9]{4,6}-[A-Z0-9]{4,6}-[A-Z0-9]{4,6}')),
+        ("webhook", re.compile(r'https://(?:qyapi\.weixin\.qq\.com|oapi\.dingtalk\.com|open\.feishu\.cn|hooks\.slack\.com)/[^\s"\'<>]{4,200}')),
+    ]
+    WX_URL_RE = re.compile(r'wx\.(request|uploadFile|downloadFile|connectSocket)\s*\(\s*\{[^}]{0,400}?url\s*:\s*["\']([^"\']{4,300})["\']', re.S)
+    WEBVIEW_RE = re.compile(r'<web-view[^>]+src=["\']([^"\']+)["\']', re.I)
+    SIGN_RE = re.compile(r'(?i)\b(sign|signature|hmac|md5|sha1|sha256|encrypt|decrypt)\b')
+
+    def _line_of(text, pos):
+        return text.count("\n", 0, pos) + 1
+
+    def _mask(s):
+        s = (s or "").strip()
+        if len(s) <= 8:
+            return s[:2] + "***" if len(s) > 2 else "***"
+        return s[:4] + "*" * min(24, len(s) - 8) + s[-4:]
+
+    endpoints, seen_ep = [], set()
+    secrets, seen_sec = [], set()
+    cloud = {"env": [], "functions": [], "collections": []}
+    sign_candidates, routes = [], []
+    files_scanned = 0
+
+    def add_ep(method, u, rel, line):
+        key = (method, u, rel, line)
+        if key in seen_ep or len(endpoints) >= 1000:
+            return
+        seen_ep.add(key)
+        endpoints.append({"method": method, "url": u, "file": rel, "line": line})
+
+    def add_sec(typ, val, rel, line, ctx):
+        key = (typ, val, rel, line)
+        if key in seen_sec or len(secrets) >= 500:
+            return
+        seen_sec.add(key)
+        secrets.append({"type": typ, "value": _mask(val), "file": rel, "line": line, "context": (ctx or "")[:160]})
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "__pycache__")]
+        for fn in filenames:
+            ext = os.path.splitext(fn)[1].lower()
+            if ext not in MINI_EXT:
+                continue
+            p = os.path.join(dirpath, fn)
+            try:
+                if os.path.getsize(p) > 2_000_000:
+                    continue
+                text = open(p, "r", encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            files_scanned += 1
+            rel = os.path.relpath(p, root).replace("\\", "/")
+            for label, pat in SECRET_PATTERNS + MINI_PATTERNS:
+                for m in pat.finditer(text):
+                    val = m.group(0)
+                    ctx = text[max(0, m.start() - 40):m.end() + 40].replace("\n", " ").replace(val, _mask(val))
+                    add_sec(label, val, rel, _line_of(text, m.start()), ctx)
+            for m in WX_URL_RE.finditer(text):
+                add_ep("WX_" + m.group(1).upper(), m.group(2), rel, _line_of(text, m.start()))
+            for m in WEBVIEW_RE.finditer(text):
+                add_ep("WEBVIEW", m.group(1), rel, _line_of(text, m.start()))
+            for m in URL_RE.finditer(text):
+                add_ep("URL", m.group(0), rel, _line_of(text, m.start()))
+            for m in API_RE.finditer(text):
+                add_ep("PATH", m.group(1), rel, _line_of(text, m.start()))
+            for label, pat in MINI_PATTERNS:
+                if label == "cloud_env":
+                    for m in pat.finditer(text):
+                        v = m.group(1)
+                        if v not in cloud["env"] and len(cloud["env"]) < 20:
+                            cloud["env"].append(v)
+                elif label == "cloud_fn":
+                    for m in pat.finditer(text):
+                        v = m.group(1)
+                        if v not in cloud["functions"] and len(cloud["functions"]) < 100:
+                            cloud["functions"].append(v)
+                elif label == "collection":
+                    for m in pat.finditer(text):
+                        v = m.group(1)
+                        if v not in cloud["collections"] and len(cloud["collections"]) < 100:
+                            cloud["collections"].append(v)
+            for m in SIGN_RE.finditer(text):
+                if len(sign_candidates) >= 200:
+                    break
+                ctx = text[max(0, m.start() - 50):m.end() + 80].replace("\n", " ")
+                sign_candidates.append({"keyword": m.group(1).lower(), "file": rel,
+                                        "line": _line_of(text, m.start()), "context": ctx[:160]})
+            if fn in ("app.json", "app-config.json"):
+                try:
+                    cfg = json.loads(text)
+                    for pg in (cfg.get("pages") or []):
+                        if pg not in routes:
+                            routes.append(pg)
+                    for sub in (cfg.get("subPackages") or cfg.get("subpackages") or []):
+                        if isinstance(sub, dict):
+                            rootp = (sub.get("root") or "").strip("/")
+                            for pg in (sub.get("pages") or []):
+                                full = (rootp + "/" + pg).strip("/") if rootp else pg
+                                if full not in routes:
+                                    routes.append(full)
+                except Exception:
+                    pass
+    _ = hashlib.sha256
+    os.makedirs(outdir, exist_ok=True)
+    report = {
+        "appid": appid or "", "root": root, "files_scanned": files_scanned,
+        "routes": routes[:500], "endpoints": endpoints, "secrets": secrets,
+        "cloud": cloud, "sign_candidates": sign_candidates,
+        "summary": {"routes": len(routes), "endpoints": len(endpoints),
+                    "secrets": len(secrets), "cloud_env": len(cloud["env"]),
+                    "cloud_functions": len(cloud["functions"]),
+                    "collections": len(cloud["collections"]),
+                    "sign_candidates": len(sign_candidates)},
+    }
+    with open(os.path.join(outdir, "report.json"), "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(outdir, "endpoints.txt"), "w", encoding="utf-8") as f:
+        for e in endpoints:
+            f.write("%s %s  # %s:%s\n" % (e["method"], e["url"], e["file"], e["line"]))
+    with open(os.path.join(outdir, "secrets.txt"), "w", encoding="utf-8") as f:
+        for s in secrets:
+            f.write("%s %s  # %s:%s  %s\n" % (s["type"], s["value"], s["file"], s["line"], s["context"]))
+    emit({"type": "miniapp_dir", "root": root, "files_scanned": files_scanned,
+          "routes": len(routes), "endpoints": len(endpoints), "secrets": len(secrets),
+          "cloud": cloud, "sign_candidates": len(sign_candidates), "out": outdir})
+    emit({"type": "summary", "mode": "dir", "out": outdir,
+          "routes": len(routes), "endpoints": len(endpoints), "secrets": len(secrets),
+          "next": "report.json/endpoints.txt/secrets.txt 已落盘；密钥先 record_fact 验证有效性，"
+                  "接口批量 insert_assets(type=endpoint)，云环境/函数按 mini-program references/04 继续"})
+
 def main():
     global BLOCK_RULES, INITIAL_ORIGINS
     args = sys.argv[1:]
     outdir = os.path.join(os.getcwd(), "jsmap")
     block_file = ""
+    dirpath = ""
+    appid = ""
+    do_osv = True
     urls = []
     i = 0
     while i < len(args):
@@ -442,8 +583,26 @@ def main():
             block_file = args[i + 1]
             i += 2
             continue
+        if args[i] == "--dir" and i + 1 < len(args):
+            dirpath = args[i + 1]
+            i += 2
+            continue
+        if args[i] == "--appid" and i + 1 < len(args):
+            appid = args[i + 1]
+            i += 2
+            continue
+        if args[i] == "--no-osv":
+            do_osv = False
+            i += 1
+            continue
         urls.append(args[i])
         i += 1
+    if dirpath:
+        if not os.path.isdir(dirpath):
+            emit({"type": "summary", "error": "目录不存在: %s" % dirpath})
+            sys.exit(2)
+        extract_miniapp_dir(dirpath, appid, outdir)
+        return
     if block_file and os.path.isfile(block_file):
         try:
             with open(block_file, "r", encoding="utf-8") as bf:
@@ -620,7 +779,7 @@ func (t *ToolSet) jsAudit() actool.CoreTool {
 				"run_with_bash": fmt.Sprintf("python3 %s --out %s%s %s", script, out, blockArg, strings.Join(quoted, " ")),
 				"count":         len(urls),
 				"note": "输出每行一个 JSON 事件（html/js/sourcemap/secrets/endpoints/summary）。" +
-					"sourcemap found=true → CWE-540：还原源码落盘在 --out 目录，save_evidence 后报 high；" +
+					"sourcemap found=true → CWE-540：还原源码落盘在 --out 目录，核实并 record_fact 后报 high；" +
 					"secrets 有真实凭据 → critical；endpoints 照常 record_fact 并按 api-security-testing 继续。",
 			})
 		})

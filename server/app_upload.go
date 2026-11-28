@@ -80,6 +80,7 @@ func (s *Server) appUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hintAppID := strings.TrimSpace(r.URL.Query().Get("appid"))
 	var uploaded []appUploadResult
 	for {
 		part, err := mr.NextPart()
@@ -90,11 +91,15 @@ func (s *Server) appUpload(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "读取上传流失败（可能超过 1024 MiB 限制）: "+err.Error())
 			return
 		}
-		rawName := part.FileName()
-		if rawName == "" {
+		if part.FileName() == "" {
+			if strings.EqualFold(part.FormName(), "appid") && hintAppID == "" {
+				b, _ := io.ReadAll(io.LimitReader(part, 64))
+				hintAppID = strings.TrimSpace(string(b))
+			}
 			_ = part.Close()
 			continue
 		}
+		rawName := part.FileName()
 		name := filepath.Base(rawName)
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 			_ = part.Close()
@@ -103,10 +108,10 @@ func (s *Server) appUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		ext := strings.ToLower(filepath.Ext(name))
 		switch ext {
-		case ".apk", ".aab", ".xapk", ".apkm", ".apks", ".ipa":
+		case ".apk", ".aab", ".xapk", ".apkm", ".apks", ".ipa", ".wxapkg", ".zip":
 		default:
 			_ = part.Close()
-			writeErr(w, 400, fmt.Sprintf("不支持的移动应用格式 %q（支持 .apk / .aab / .xapk / .ipa）", ext))
+			writeErr(w, 400, fmt.Sprintf("不支持的应用包格式 %q（支持 .apk / .aab / .xapk / .ipa / .wxapkg / .zip）", ext))
 			return
 		}
 
@@ -132,14 +137,29 @@ func (s *Server) appUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Verify ZIP magic bytes ("PK") right away before unpacking.
-		if !hasZIPMagic(dst) {
-			_ = os.Remove(dst)
-			writeErr(w, 400, fmt.Sprintf("文件 %s 不是有效的 APK/IPA 压缩归档", name))
-			return
+		// Verify ZIP or wxapkg magic bytes cleanly before parsing.
+		switch ext {
+		case ".wxapkg":
+			if _, ok := mobile.HasWxapkgMagic(dst); !ok {
+				_ = os.Remove(dst)
+				writeErr(w, 400, fmt.Sprintf("文件 %s 不是有效的微信小程序 .wxapkg 包", name))
+				return
+			}
+		case ".zip":
+			if kind, ok := mobile.HasWxapkgMagic(dst); !ok || kind != "zip_bundle" {
+				_ = os.Remove(dst)
+				writeErr(w, 400, fmt.Sprintf("ZIP 压缩包 %s 内未检测到 .wxapkg 小程序包", name))
+				return
+			}
+		default:
+			if !hasZIPMagic(dst) {
+				_ = os.Remove(dst)
+				writeErr(w, 400, fmt.Sprintf("文件 %s 不是有效的 APK/IPA 压缩归档", name))
+				return
+			}
 		}
 
-		meta, iErr := mobile.InspectPackage(dst)
+		meta, iErr := mobile.InspectPackageWithHint(dst, hintAppID)
 		if iErr != nil {
 			log.Printf("[app-upload] inspect warning for %s: %v", name, iErr)
 		}

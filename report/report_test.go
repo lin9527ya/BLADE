@@ -596,4 +596,33 @@ func TestMarkdownMobileProfileSection(t *testing.T) {
 			t.Fatalf("mobile report missing %q:\n%s", want, mobMD)
 		}
 	}
+
+	miniMD := Markdown(Input{
+		Title:       "wx",
+		Goal:        "g",
+		GeneratedAt: time.Unix(0, 0),
+		Mobile: &MobileReportProfile{
+			Platform:     "miniapp",
+			PackageName:  "wx1234567890abcdef",
+			SampleSHA256: "deadbeef02",
+			MiniApp: &MiniAppReportProfile{
+				AppID:              "wx1234567890abcdef",
+				ContainerType:      "v1mmwx",
+				EncryptionDetected: true,
+				RoutesCount:        4,
+				SubPackagesCount:   1,
+				CloudEnvs:          []string{"prod-env"},
+				CloudFunctions:     []string{"payCallback"},
+				CloudCollections:   []string{"orders"},
+			},
+		},
+	})
+	for _, want := range []string{"wx1234567890abcdef", "v1mmwx", "CloudBase 云开发资产", "prod-env"} {
+		if !strings.Contains(miniMD, want) {
+			t.Fatalf("miniapp report missing %q:\n%s", want, miniMD)
+		}
+	}
+	if strings.Contains(miniMD, "Manifest 安全属性") {
+		t.Fatalf("miniapp report must not render Android Manifest flags:\n%s", miniMD)
+	}
 }

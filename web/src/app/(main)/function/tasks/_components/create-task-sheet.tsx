@@ -205,6 +205,7 @@ export function CreateTaskSheet({
   const [appExtraHostsInput, setAppExtraHostsInput] = React.useState("");
   const [mobileDevices, setMobileDevices] = React.useState<MobileDevice[]>([]);
   const [mobileDeviceID, setMobileDeviceID] = React.useState("");
+  const [miniAppID, setMiniAppID] = React.useState("");
   const appInputRef = React.useRef<HTMLInputElement>(null);
   const draftIdRef = React.useRef<string>("");
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -239,7 +240,13 @@ export function CreateTaskSheet({
     }
     setAppUploadPct(0);
     try {
-      const res = await api.uploadAppPackage("staging", draftIdRef.current, file, (pct) => setAppUploadPct(pct));
+      const res = await api.uploadAppPackage(
+        "staging",
+        draftIdRef.current,
+        file,
+        (pct) => setAppUploadPct(pct),
+        miniAppID,
+      );
       const path = res.primary?.sample_path;
       if (path) setAppSamplePaths((prev) => [...new Set([...prev, path])]);
       const man = res.samples?.[0]?.manifest;
@@ -367,6 +374,7 @@ export function CreateTaskSheet({
       setAppManifest(null);
       setAppExtraHostsInput("");
       setMobileDeviceID("");
+      setMiniAppID("");
       draftIdRef.current = "";
       setOpen(false);
       onCreated();
@@ -415,47 +423,65 @@ export function CreateTaskSheet({
                 onClick={() => setAppMode("mobile")}
               >
                 <SmartphoneIcon className="size-3.5" />
-                移动 APP（APK / AAB / XAPK / IPA）
+                移动 APP / 小程序（APK / IPA / WXAPKG）
               </Button>
             </div>
             {appMode === "mobile" && (
               <div className="grid gap-3 rounded-md border border-sky-500/30 bg-sky-500/5 p-4 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <div className="font-medium text-sm">移动应用样本与设备绑定</div>
+                    <div className="font-medium text-sm">移动应用与微信小程序样本解析</div>
                     <div className="text-muted-foreground">
-                      流式上传支持最大 1024 MiB（1 GiB）安装包并即时提取包名、框架、加壳及后端域名
+                      流式上传支持最大 1024 MiB（APK/AAB/XAPK/IPA/WXAPKG/ZIP），即时提取包信息、路由、云开发与后端域名
                     </div>
                   </div>
-                  <input
-                    ref={appInputRef}
-                    type="file"
-                    accept=".apk,.aab,.xapk,.apkm,.apks,.ipa"
-                    className="hidden"
-                    onChange={(e) => void pickAppPackage(e.target.files)}
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={appUploadPct !== null}
-                    onClick={() => appInputRef.current?.click()}
-                  >
-                    <UploadIcon className="size-3.5" />
-                    {appUploadPct !== null ? `上传解析中 ${appUploadPct}%` : "上传 APK / IPA"}
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Input
+                      placeholder="可选 wxAppID"
+                      aria-label="可选微信小程序 AppID"
+                      value={miniAppID}
+                      onChange={(e) => setMiniAppID(e.target.value)}
+                      className="h-8 w-28 bg-background font-mono text-xs"
+                    />
+                    <input
+                      ref={appInputRef}
+                      type="file"
+                      accept=".apk,.aab,.xapk,.apkm,.apks,.ipa,.wxapkg,.zip"
+                      className="hidden"
+                      onChange={(e) => void pickAppPackage(e.target.files)}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={appUploadPct !== null}
+                      onClick={() => appInputRef.current?.click()}
+                    >
+                      <UploadIcon className="size-3.5" />
+                      {appUploadPct !== null ? `上传解析中 ${appUploadPct}%` : "上传应用 / 小程序包"}
+                    </Button>
+                  </div>
                 </div>
                 {appManifest && (
                   <div className="grid gap-1.5 rounded border bg-background p-2.5 font-mono">
                     <div>
-                      包名: <strong>{appManifest.package_name}</strong> · 平台: {appManifest.platform} · 版本:{" "}
+                      包名 / AppID: <strong>{appManifest.package_name}</strong> · 平台: {appManifest.platform} · 版本:{" "}
                       {appManifest.version_name || "-"} · 大小: {formatSampleBytes(appManifest.size_bytes)}
                     </div>
-                    <div className="text-muted-foreground">
-                      框架: {appManifest.frameworks?.join(", ") || "原生"} · 加壳:{" "}
-                      {appManifest.packers?.join(", ") || "未见明显加壳"} · Schemes:{" "}
-                      {appManifest.url_schemes?.join(", ") || "无"}
-                    </div>
+                    {appManifest.platform === "miniapp" && appManifest.miniapp ? (
+                      <div className="text-muted-foreground">
+                        容器: {appManifest.miniapp.container_type || "plain"} · 路由数:{" "}
+                        {appManifest.miniapp.routes?.length ?? 0} · CloudBase Env:{" "}
+                        {appManifest.miniapp.cloud_envs?.join(", ") || "未检测到"} · 云函数:{" "}
+                        {appManifest.miniapp.cloud_functions?.length ?? 0} 个
+                      </div>
+                    ) : (
+                      <div className="text-muted-foreground">
+                        框架: {appManifest.frameworks?.join(", ") || "原生"} · 加壳:{" "}
+                        {appManifest.packers?.join(", ") || "未见明显加壳"} · Schemes:{" "}
+                        {appManifest.url_schemes?.join(", ") || "无"}
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="grid gap-1.5">

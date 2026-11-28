@@ -2934,30 +2934,57 @@ export const api = {
     id: string,
     file: File,
     onProgress?: (pct: number) => void,
+    appId = "",
   ): Promise<AppUploadResp> => {
+    const cleanAppID = appId.trim();
     if (MOCK) {
       onProgress?.(100);
+      const isMini = file.name.toLowerCase().endsWith(".wxapkg") || file.name.toLowerCase().endsWith(".zip");
       return Promise.resolve({
         samples: [
           {
             sample_path: `drafts/${id}/samples/${file.name}`,
             name: file.name,
             size_bytes: file.size,
-            manifest: {
-              sample_name: file.name,
-              sha256: "mock",
-              size_bytes: file.size,
-              platform: file.name.endsWith(".ipa") ? "ios" : "android",
-              file_type: file.name.endsWith(".ipa") ? "ipa" : "apk",
-              package_name: "com.acme.shop",
-              app_name: "Acme Shop",
-              version_name: "3.2.0",
-              debuggable: true,
-              frameworks: ["Flutter"],
-              candidate_domains: ["api.acme-shop.cn"],
-              url_schemes: ["acmeshop"],
-              inspected_at_unix: Math.floor(Date.now() / 1000),
-            },
+            manifest: isMini
+              ? {
+                  sample_name: file.name,
+                  sha256: "mock-wxapkg",
+                  size_bytes: file.size,
+                  platform: "miniapp",
+                  file_type: file.name.toLowerCase().endsWith(".zip") ? "zip" : "wxapkg",
+                  package_name: cleanAppID || "wx1234567890abcdef",
+                  app_name: cleanAppID || "Mock MiniProgram",
+                  debuggable: false,
+                  allow_backup: false,
+                  frameworks: ["WeChat MiniProgram", "CloudBase"],
+                  candidate_domains: ["api.wx.mock.test"],
+                  miniapp: {
+                    appid: cleanAppID || "wx1234567890abcdef",
+                    container_type: "plain",
+                    file_count: 18,
+                    routes: ["pages/index/index", "pages/order/order"],
+                    cloud_envs: ["prod-env-01"],
+                    cloud_functions: ["getUserOrder"],
+                    cloud_collections: ["orders"],
+                  },
+                  inspected_at_unix: Math.floor(Date.now() / 1000),
+                }
+              : {
+                  sample_name: file.name,
+                  sha256: "mock",
+                  size_bytes: file.size,
+                  platform: file.name.endsWith(".ipa") ? "ios" : "android",
+                  file_type: file.name.endsWith(".ipa") ? "ipa" : "apk",
+                  package_name: "com.acme.shop",
+                  app_name: "Acme Shop",
+                  version_name: "3.2.0",
+                  debuggable: true,
+                  frameworks: ["Flutter"],
+                  candidate_domains: ["api.acme-shop.cn"],
+                  url_schemes: ["acmeshop"],
+                  inspected_at_unix: Math.floor(Date.now() / 1000),
+                },
           },
         ],
         primary: { sample_path: `drafts/${id}/samples/${file.name}`, name: file.name, size_bytes: file.size },
@@ -2965,9 +2992,11 @@ export const api = {
     }
     return new Promise((resolve, reject) => {
       const fd = new FormData();
+      if (cleanAppID) fd.append("appid", cleanAppID);
       fd.append("file", file);
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", `/api/apps/upload?scope=${scope}&id=${encodeURIComponent(id)}`);
+      const qAppID = cleanAppID ? `&appid=${encodeURIComponent(cleanAppID)}` : "";
+      xhr.open("POST", `/api/apps/upload?scope=${scope}&id=${encodeURIComponent(id)}${qAppID}`);
       const token = getToken();
       if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
       xhr.upload.onprogress = (ev) => {
@@ -3020,12 +3049,14 @@ export const api = {
     }),
   runTaskMobileDecompileAudit: (
     taskId: string,
-    opts?: { sample_path?: string; mode?: "auto" | "fast" | "deep"; skip_apktool?: boolean },
+    opts?: { sample_path?: string; appid?: string; mode?: "auto" | "fast" | "deep"; skip_apktool?: boolean },
   ) =>
     post<{ ok: boolean; audit: DecompileAuditReport }>(
       `/tasks/${encodeURIComponent(taskId)}/mobile/decompile-audit`,
       opts ?? {},
     ),
+  taskMobileScreenshotUrl: (taskId: string, name: string) =>
+    `/api/tasks/${encodeURIComponent(taskId)}/mobile/screenshots/${encodeURIComponent(name)}`,
   runTaskMobileIPCFuzz: (taskId: string, maxProbes = 25) =>
     post<MobileIPCFuzzReport>(`/tasks/${encodeURIComponent(taskId)}/mobile/ipc-fuzz`, { max_probes: maxProbes }),
   runTaskMobileStorageAudit: (taskId: string, pkg = "") =>

@@ -43,10 +43,11 @@ type ArchiveExtractReport struct {
 	Warnings       []string `json:"warnings,omitempty"`
 }
 
-// DecompileOptions configures safe APK/IPA extraction, external decompilers, and directory whitebox scanning.
+// DecompileOptions configures safe APK/IPA/MiniProgram extraction, external decompilers, and directory whitebox scanning.
 type DecompileOptions struct {
 	Mode          string // auto | fast | deep
 	SkipApktool   bool
+	HintAppID     string // Optional WeChat AppID (wx+16hex) for V1MMWX decryption
 	JadxTimeout   time.Duration
 	CommandRunner ADBRunner // Optional override for deterministic unit testing
 }
@@ -119,7 +120,7 @@ var (
 	rePEMBlock     = regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH |PRIVATE )?PRIVATE KEY-----`)
 	reAKSKToken    = regexp.MustCompile(`\b(?:AKIA[0-9A-Z]{16}|LTAI[0-9A-Za-z]{12,24}|sk_live_[0-9a-zA-Z]{16,}|ghp_[0-9a-zA-Z]{24,}|AIza[0-9A-Za-z\-_]{35}|eyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{8,})\b`)
 	reHighEntCand  = regexp.MustCompile(`(?i)(?:key|secret|token|salt|sign|hmac|cipher|password|passwd|auth)["']?\s*[:=,]\s*["']([A-Za-z0-9+/=_-]{20,96})["']`)
-	reSignKeyword  = regexp.MustCompile(`(?i)(?:Interceptor\b|CertificatePinner|getSign|calcSign|signature|HmacSHA|MessageDigest\.getInstance|Cipher\.getInstance|SecretKeySpec|IvParameterSpec)`)
+	reSignKeyword  = regexp.MustCompile(`(?i)(?:Interceptor\b|CertificatePinner|getSign|calcSign|signature|HmacSHA|MessageDigest\.getInstance|Cipher\.getInstance|SecretKeySpec|IvParameterSpec|CryptoJS\b|wx\.requestPayment\b|\bmd5\s*\(|\bsha(?:1|256)\s*\(|\bhmac\b)`)
 )
 
 // SafeExtractMobileArchive extracts APK/XAPK/APKM/APKS/AAB/IPA entries safely into outDir,
@@ -291,7 +292,7 @@ func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts Decom
 		runner = defaultCommandRunner
 	}
 
-	meta, err := InspectPackage(absPkg)
+	meta, err := InspectPackageWithHint(absPkg, opts.HintAppID)
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +308,12 @@ func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts Decom
 		}
 	}
 
-	extRep, err := SafeExtractMobileArchive(absPkg, rawOut, defaultArchiveLimits())
+	var extRep *ArchiveExtractReport
+	if meta.Platform == PlatformMiniApp {
+		extRep, err = extractMiniAppSample(absPkg, rawOut, meta.MiniApp)
+	} else {
+		extRep, err = SafeExtractMobileArchive(absPkg, rawOut, defaultArchiveLimits())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -389,6 +395,20 @@ func DecompileAndAudit(ctx context.Context, pkgPath, taskRoot string, opts Decom
 
 	// Output quality gate (never judge success solely by tool exit codes).
 	switch {
+	case meta.Platform == PlatformMiniApp:
+		if meta.MiniApp != nil && meta.MiniApp.EncryptionDetected && rep.Extract.ExtractedFiles == 0 {
+			rep.QualityStatus = "partial_packed"
+			rep.Warnings = append(rep.Warnings, "小程序包存在加密且未能完整提取；请确认 AppID 或使用动态 Hook")
+		} else if meta.MiniApp != nil && meta.MiniApp.HasCompiledTpl {
+			rep.QualityStatus = "partial_packed"
+			rep.Warnings = append(rep.Warnings, "检测到 __wxCodeSpace__/batchAddCompiledTemplate 新编译模板，部分 WXML 结构可能不完整")
+		} else if rep.Extract.ExtractedFiles > 0 && (meta.MiniApp != nil && len(meta.MiniApp.Routes) > 0) {
+			rep.QualityStatus = "full"
+		} else if rep.Extract.ExtractedFiles > 0 {
+			rep.QualityStatus = "partial_packed"
+		} else {
+			rep.QualityStatus = "raw_only"
+		}
 	case rep.JavaFileCount >= 10 || rep.SmaliFileCount >= 10:
 		rep.QualityStatus = "full"
 	case len(meta.Packers) > 0 && rep.JavaFileCount < 10:
@@ -447,7 +467,8 @@ var whiteboxSourceExts = map[string]bool{
 	".java": true, ".kt": true, ".smali": true, ".js": true, ".jsx": true,
 	".ts": true, ".tsx": true, ".mjs": true, ".json": true, ".xml": true,
 	".html": true, ".htm": true, ".plist": true, ".yaml": true, ".yml": true,
-	".properties": true, ".dart": true,
+	".properties": true, ".dart": true, ".wxml": true, ".wxss": true, ".wxs": true,
+	".map": true,
 }
 
 type lineRiskPattern struct {
@@ -486,6 +507,66 @@ var whiteboxLineRisks = []lineRiskPattern{
 		title: "SQLite rawQuery/execSQL 存在字符串拼接注入隐患",
 		re:    regexp.MustCompile(`\b(?:rawQuery|execSQL)\s*\([^"\r\n]*\+`),
 	},
+	{
+		id: "miniapp-cloud-call", category: "network", severity: "info", masvs: "MASVS-STORAGE-1",
+		title: "小程序调用 CloudBase 云函数/数据库接口",
+		re:    regexp.MustCompile(`wx\.cloud\.(?:callFunction|database)`),
+	},
+	{
+		id: "miniapp-webview-bridge", category: "platform", severity: "medium", masvs: "MASVS-PLATFORM-2",
+		title: "小程序使用 web-view 加载 H5 页面，需核查 URL 白名单与 JSSDK 通信",
+		re:    regexp.MustCompile(`(?i)<web-view[^>]+src=`),
+	},
+}
+
+func extractMiniAppSample(absPkg, rawOut string, summary *MiniAppSummary) (*ArchiveExtractReport, error) {
+	appID := ""
+	if summary != nil {
+		appID = summary.AppID
+	}
+	ext := strings.ToLower(filepath.Ext(absPkg))
+	if ext != ".zip" {
+		raw, err := os.ReadFile(absPkg)
+		if err != nil {
+			return nil, err
+		}
+		rep, _, err := SafeExtractWxapkgData(raw, appID, rawOut, defaultArchiveLimits())
+		if err != nil {
+			// If encrypted with unknown AppID, return clean partial extraction report with warning
+			return &ArchiveExtractReport{Warnings: []string{err.Error()}}, nil
+		}
+		return rep, nil
+	}
+	zr, err := zip.OpenReader(absPkg)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	agg := &ArchiveExtractReport{}
+	for _, zf := range zr.File {
+		if !isSafeZipEntryName(zf.Name) || !strings.HasSuffix(strings.ToLower(zf.Name), ".wxapkg") {
+			continue
+		}
+		raw, rerr := readBoundedZipFile(zf, maxWxapkgRead)
+		if rerr != nil || len(raw) == 0 {
+			continue
+		}
+		subID := appID
+		if subID == "" {
+			subID = ExtractWeChatAppID(zf.Name)
+		}
+		pkgSubDir := filepath.Join(rawOut, strings.TrimSuffix(filepath.Base(zf.Name), filepath.Ext(zf.Name)))
+		rep, _, derr := SafeExtractWxapkgData(raw, subID, pkgSubDir, defaultArchiveLimits())
+		if derr != nil {
+			agg.Warnings = append(agg.Warnings, zf.Name+": "+derr.Error())
+			continue
+		}
+		agg.ExtractedFiles += rep.ExtractedFiles
+		agg.SkippedFiles += rep.SkippedFiles
+		agg.TotalBytes += rep.TotalBytes
+		agg.Warnings = append(agg.Warnings, rep.Warnings...)
+	}
+	return agg, nil
 }
 
 func auditDecompiledDirectory(decompiledRoot string, rep *DecompileAuditReport) error {

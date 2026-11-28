@@ -457,6 +457,9 @@ ON CONFLICT (name) DO NOTHING`,
 	if err := d.seedMobileTaskPlaybooks(); err != nil {
 		return fmt.Errorf("seed mobile playbooks: %w", err)
 	}
+	if err := d.seedMiniAppTaskPlaybooks(); err != nil {
+		return fmt.Errorf("seed miniapp playbooks: %w", err)
+	}
 	if err := d.seedDefaultInterceptRules(); err != nil {
 		return fmt.Errorf("seed intercept rules: %w", err)
 	}
@@ -686,6 +689,7 @@ var builtinSkillVisibility = map[string][]string{
 	"apk-reverse":             {"pentest", "worker"},
 	"binary-mobile-reversing": {"pentest", "worker"},
 	"coldcoffee":              {"auto", "pentest", "mainagent"},
+	"mini-program":            {"pentest", "worker"},
 }
 
 // seedBuiltinSkillVisibility binds the shipped built-in skills to their default

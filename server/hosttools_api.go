@@ -47,6 +47,8 @@ var hostToolCatalog = []hostToolProbe{
 	{Name: "radare2", Args: []string{"-v"}, Purpose: "SO / Mach-O 原生库逆向分析"},
 	{Name: "ideviceinfo", Args: []string{"--version"}, Purpose: "iOS USB 真机状态查询"},
 	{Name: "iproxy", Args: []string{"--version"}, Purpose: "iOS usbmuxd 端口映射"},
+	{Name: "killwxapkg", Args: []string{"--help"}, Purpose: "微信小程序解包与加密还原（MIT）"},
+	{Name: "wedecode", Args: []string{"--version"}, Purpose: "微信小程序高质量还原（WXML/4.x，外部进程）"},
 	{Name: "curl", Args: []string{"--version"}, Purpose: "HTTP 探测/回连验证"},
 	{Name: "python3", Args: []string{"--version"}, Purpose: "脚本与工具链"},
 }

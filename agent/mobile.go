@@ -270,11 +270,18 @@ func (t *ToolSet) mobileIPCProbe() actool.CoreTool {
 
 func mobilePlannerContextBlock(summary string, hasDevice bool) string {
 	var b strings.Builder
-	b.WriteString("\n\n【移动 APP 评估上下文（动态注入）】\n")
+	b.WriteString("\n\n【移动 APP / 小程序评估上下文（动态注入）】\n")
 	b.WriteString(summary)
-	b.WriteString("\n规范指引：优先按需加载 `apk-reverse` 技能，并先用 `mobile_decompile_audit` 安全解包并完成源码白盒扫描；提交结论或收尾前调用 `mobile_evidence_check` 自检证据闭环。")
+	isMiniApp := strings.Contains(strings.ToLower(summary), "miniapp") || strings.Contains(strings.ToLower(summary), ".wxapkg")
+	if isMiniApp {
+		b.WriteString("\n规范指引（微信小程序）：优先加载 `mini-program` 技能，使用 `mobile_decompile_audit`（自动 V1MMWX 解密+白盒提取）或 `${SKILL_DIR}/scripts/miniapp_unpack.sh` + `miniapp_audit` 提取 AppID、页面路由、CloudBase 云函数/集合与脱敏密钥；再用 A/B 双身份经 `http_request`/`diff_responses` 测试后端与云开发权限；提交前调用 `mobile_evidence_check` 自检。")
+	} else {
+		b.WriteString("\n规范指引：优先按需加载 `apk-reverse`（若为 `.wxapkg`/小程序则加载 `mini-program`），先用 `mobile_decompile_audit` 安全解包并完成源码白盒扫描；提交结论或收尾前调用 `mobile_evidence_check` 自检证据闭环。")
+	}
 	if !hasDevice {
-		b.WriteString("\n当前尚未绑定移动测试机：可依据 `mobile_decompile_audit`、静态 SAST/ELF/签名画像或 Bash (jadx / apktool / apksigner / radare2) 对工作目录 samples/ 下样本深化逆向并验证后端接口（XAPK/APKM/IPA 亦自动支持解包审计）；如需动态测试，可提示操作者在任务详情「移动端工作台」绑定设备。")
+		if !isMiniApp {
+			b.WriteString("\n当前尚未绑定移动测试机：可依据 `mobile_decompile_audit`、静态 SAST/ELF/签名画像或 Bash (jadx / apktool / apksigner / radare2) 对工作目录 samples/ 下样本深化逆向并验证后端接口（XAPK/APKM/IPA/WXAPKG 亦自动支持解包审计）；如需动态测试，可提示操作者在任务详情「移动端工作台」绑定设备。")
+		}
 	} else {
 		b.WriteString("\n已绑定移动测试机：建议规划全覆盖闭环「① 先跑 mobile_decompile_audit 与 static_audit/ELF/签名画像 → ② 配置 Root 系统 CA 与抓包（遇无视系统代理流量/Flutter/Cronet 用 enable_transparent 或 native_tls_hook/flutter_ssl_bypass）→ ③ 用 mobile_ui_explore(auto_crawl / screenshot) 或人机登录后 extract-session（支持 account_label 区分账号 A/B）打通接口覆盖 → ④ 若 API 带签名，在 Frida 导出签名函数并直接用 http_request(mobile_sign_method=...) 批量跑越权/注入 → ⑤ 执行 mobile_ipc_probe(auto_fuzz) 与 mobile_app_ctrl(sandbox_audit/logcat_audit) → ⑥ 用 mobile_evidence_check 校验证据完整性后落库」。")
 	}
@@ -283,9 +290,9 @@ func mobilePlannerContextBlock(summary string, hasDevice bool) string {
 
 func mobileWorkerContextBlock(summary string, hasDevice bool) string {
 	var b strings.Builder
-	b.WriteString("\n\n【当前任务移动样本与设备上下文】\n")
+	b.WriteString("\n\n【当前任务移动样本 / 小程序与设备上下文】\n")
 	b.WriteString(summary)
-	b.WriteString("\n可用静态与质量自检工具：mobile_decompile_audit（安全解压/质量门控反编译/源码白盒扫描）、mobile_evidence_check（报告与 SRC 闭环自检）；深入逆向可读取 Skill `apk-reverse`。")
+	b.WriteString("\n可用静态与质量自检工具：mobile_decompile_audit（安全解压/质量门控反编译/白盒扫描，兼容 APK/IPA/WXAPKG）、miniapp_audit（小程序源码目录深度审计）、mobile_evidence_check（报告与 SRC 闭环自检）；深入逆向可读取 Skill `apk-reverse` 或 `mini-program`。")
 	if hasDevice {
 		b.WriteString("\n已绑定真机/模拟器动态工具：mobile_device_status / mobile_app_ctrl(含 sandbox_audit/logcat_audit/static_audit) / mobile_proxy_ctrl(含 enable_transparent) / mobile_ui_explore(含 screenshot/auto_crawl) / mobile_frida_hook(含 flutter_ssl_bypass/native_tls_hook/storage_crypto_audit/flag_secure_bypass/socket_traffic_tap 与 iOS 模板) / mobile_rpc_sign / mobile_ipc_probe(含 service/auto_fuzz)。")
 		b.WriteString(" 此外 http_request 支持 mobile_sign_method 自动调用活跃 Frida RPC 为接口测试重签参数；无视系统代理的流量可通过 enable_transparent 或 native_tls_hook 直接接入流量库。")

@@ -110,8 +110,13 @@ var thirdPartySDKHostSuffixes = []string{
 	"openinstall.io",
 }
 
-// InspectPackage validates and inspects a mobile archive (.apk, .aab, .xapk, .ipa) on disk.
+// InspectPackage validates and inspects a mobile archive (.apk, .aab, .xapk, .ipa, .wxapkg) on disk.
 func InspectPackage(path string) (*PackageMetadata, error) {
+	return InspectPackageWithHint(path, "")
+}
+
+// InspectPackageWithHint inspects a mobile/mini-program sample while optionally supplying a known WeChat AppID.
+func InspectPackageWithHint(path, hintAppID string) (*PackageMetadata, error) {
 	st, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat sample: %w", err)
@@ -128,6 +133,16 @@ func InspectPackage(path string) (*PackageMetadata, error) {
 	fileType := strings.TrimPrefix(ext, ".")
 	if fileType == "" {
 		fileType = "apk"
+	}
+
+	if fileType == "wxapkg" {
+		return inspectMiniAppPackage(path, sha, st.Size(), hintAppID)
+	}
+	if fileType == "zip" {
+		if kind, ok := HasWxapkgMagic(path); ok && kind == "zip_bundle" {
+			return inspectMiniAppPackage(path, sha, st.Size(), hintAppID)
+		}
+		return nil, fmt.Errorf("zip 压缩包内未检测到 .wxapkg 小程序包")
 	}
 
 	zr, err := zip.OpenReader(path)

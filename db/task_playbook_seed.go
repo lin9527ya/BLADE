@@ -63,3 +63,44 @@ func (d *DB) seedMobileTaskPlaybooks() error {
 	}
 	return d.SetSetting(flag, "done")
 }
+
+var builtinMiniAppPlaybooks = []builtinMobilePlaybook{
+	{
+		name:        "Playbook：微信小程序全流程渗透（解包 + 云开发 + A/B 越权 + SRC 报告）",
+		description: "适用：已上传 .wxapkg 或含小程序包的 .zip（或在任务中给出微信小程序 AppID）。流程：安全解密解包 → miniapp_audit 白盒扫描 → 路由/云开发审计 → A/B 双账号接口越权 → 证据校验与报告。",
+		goal: `对「{{目标微信小程序与授权后端}}」开展微信小程序全流程安全测试，产出可复现且符合 SRC/微信安全标准的渗透报告。**核心纪律：wxapkg 安全解包拿钥匙，A/B 双身份打穿后端接口与云开发边界。**
+
+【授权范围】
+- 被测微信小程序 AppID 对应的业务域名、API 网关、WebView 业务域及授权测试的 CloudBase 云环境；第三方公共统计/地图 SDK 仅作资产清单核查，不作超范围攻击。
+
+【内部工作流】
+1. 样本确认与安全解包：加载 Skill("mini-program")；核查 samples/ 或 uploads/ 下的 .wxapkg / .zip 样本，使用 mobile_decompile_audit 或 ${SKILL_DIR}/scripts/miniapp_unpack.sh 执行安全解包（防路径穿越 + V1MMWX 解密 + 质量门控），并以 insert_assets(type="app", bundle_id=<AppID>) 登记小程序资产；
+2. 静态白盒审计：对解包源码目录调用 miniapp_audit(dir=..., appid=...)，提取 app.json/app-config.json 全量路由、wx.request/uploadFile/connectSocket 接口、CloudBase env/云函数/集合、签名算法位置与脱敏密钥提示；端点批量入 insert_assets(type="endpoint")，关键线索落 record_fact；
+3. 云开发与开放能力审计：针对检出的云开发 env、wx.cloud.callFunction、数据库 collection、web-view 容器及小程序码/登录口（loginByOpenId/code2Session 校验、手机号新旧版流程），结合 references/03~07 做逐项核查；
+4. 抓包与 A/B 双身份越权：引导代理抓包（PC 微信 Proxifier 进程代理或工作台提取会话），使用 session_login / extract-session 建立 A/B 测试身份，对核心接口跑无令牌、空令牌、A/B 水平越权及普通/管理垂直越权，并用 diff_responses 比对差异；
+5. 证据校验与报告：严禁将“未加固/可反编译”或无利用链的公开 SDK Key 定性高危；提交 report_finding 前调用 mobile_evidence_check 自检包哈希、源码定位、HTTP 请求响应闭环与凭据脱敏。`,
+	},
+}
+
+// seedMiniAppTaskPlaybooks idempotently seeds built-in WeChat Mini Program playbooks
+// using an isolated settings flag so upgrades never collide with task_playbooks_mobile_v1.
+func (d *DB) seedMiniAppTaskPlaybooks() error {
+	const flag = "task_playbooks_miniapp_v1"
+	if v, _, _ := d.GetSetting(flag); v == "done" {
+		return nil
+	}
+	for _, pb := range builtinMiniAppPlaybooks {
+		in := TaskTemplateInput{
+			Name:        pb.name,
+			Description: pb.description,
+			Goal:        pb.goal,
+		}
+		if _, err := d.CreateTaskTemplate(in); err != nil {
+			if errors.Is(err, ErrTaskTemplateNameConflict) {
+				continue
+			}
+			return fmt.Errorf("miniapp playbook %q: %w", pb.name, err)
+		}
+	}
+	return d.SetSetting(flag, "done")
+}

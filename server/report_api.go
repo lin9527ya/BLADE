@@ -317,6 +317,18 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 						mp.UsesCleartext = *meta.CleartextTraffic
 					}
 					mp.CandidateDomains = meta.CandidateDomains
+					if meta.MiniApp != nil {
+						mp.MiniApp = &report.MiniAppReportProfile{
+							AppID:              meta.MiniApp.AppID,
+							ContainerType:      meta.MiniApp.ContainerType,
+							EncryptionDetected: meta.MiniApp.EncryptionDetected,
+							RoutesCount:        len(meta.MiniApp.Routes),
+							SubPackagesCount:   len(meta.MiniApp.SubPackages),
+							CloudEnvs:          meta.MiniApp.CloudEnvs,
+							CloudFunctions:     meta.MiniApp.CloudFunctions,
+							CloudCollections:   meta.MiniApp.CloudCollections,
+						}
+					}
 					for _, sf := range meta.StaticFindings {
 						mp.StaticFindings = append(mp.StaticFindings, report.MobileStaticFindingSummary{
 							ID:       sf.ID,

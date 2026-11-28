@@ -2938,6 +2938,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       task_id: seg[1],
       app_mode: "standard",
       app_sample_paths: [],
+      decompile_audit: null,
+      screenshots: [],
       frida_sessions: [],
       pinning_alerts: [],
       scope_hosts: [],
@@ -2996,6 +2998,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
         scanned_files: 422,
         endpoints: [],
         secrets: [],
+        risks: [],
         sign_candidates: [],
       },
     };

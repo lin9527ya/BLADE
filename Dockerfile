@@ -12,7 +12,16 @@
 #   docker build -t blade:local .
 # Pin the multi-arch base image digest so a rebuild cannot silently pick a new
 # OS layer. Update this digest deliberately when refreshing the toolchain.
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS killwxapkg-builder
+ARG TARGETARCH
+ARG KILLWXAPKG_VERSION=v2.4.1
+RUN git clone --depth 1 --branch ${KILLWXAPKG_VERSION} https://github.com/Ackites/KillWxapkg /tmp/killwxapkg \
+    && cd /tmp/killwxapkg \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /tmp/killwxapkg_bin .
+
 FROM python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
+COPY --from=killwxapkg-builder /tmp/killwxapkg_bin /usr/local/bin/killwxapkg
+COPY --from=killwxapkg-builder /tmp/killwxapkg/LICENSE /usr/share/licenses/KillWxapkg/LICENSE
 ARG TARGETARCH
 # Pin the browser toolchain: :latest made image contents non-reproducible and a
 # routine rebuild could silently change the agent's browser/MCP behavior.

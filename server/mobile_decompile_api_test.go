@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -193,5 +194,118 @@ func TestMobileDecompileAuditRouteAndTaskMobileAppGating(t *testing.T) {
 	}
 	if _, err := m.pg.FindingsMissingReport(mobTID, 10); err != nil {
 		t.Fatalf("FindingsMissingReport failed: %v", err)
+	}
+}
+
+func buildTestPlainWxapkgBytes(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
+	var keys []string
+	total := 0
+	for k, v := range files {
+		keys = append(keys, k)
+		total += len(v)
+	}
+	if total < 1200 {
+		files["__padding__.bin"] = bytes.Repeat([]byte{0x00}, 2048-total)
+		keys = append(keys, "__padding__.bin")
+	}
+	indexLen := 4
+	for _, k := range keys {
+		indexLen += 4 + len(k) + 8
+	}
+	offset := 14 + indexLen
+	var idx, data bytes.Buffer
+	for _, k := range keys {
+		body := files[k]
+		_ = binary.Write(&idx, binary.BigEndian, uint32(len(k)))
+		idx.WriteString(k)
+		_ = binary.Write(&idx, binary.BigEndian, uint32(offset))
+		_ = binary.Write(&idx, binary.BigEndian, uint32(len(body)))
+		offset += len(body)
+		data.Write(body)
+	}
+	var out bytes.Buffer
+	out.WriteByte(0xBE)
+	_ = binary.Write(&out, binary.BigEndian, uint32(0))
+	_ = binary.Write(&out, binary.BigEndian, uint32(indexLen))
+	_ = binary.Write(&out, binary.BigEndian, uint32(data.Len()))
+	out.WriteByte(0xED)
+	_ = binary.Write(&out, binary.BigEndian, uint32(len(keys)))
+	out.Write(idx.Bytes())
+	out.Write(data.Bytes())
+	return out.Bytes()
+}
+
+func TestMiniAppUploadStatePersistenceAndScreenshotRoute(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		if m == nil {
+			t.Skipf("PG unavailable (%v)", err)
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	srv := New(ctx, m, t.TempDir(), m.dir, m.dir)
+	t.Cleanup(func() {
+		cancel()
+		srv.archive.wg.Wait()
+		<-srv.side.done
+	})
+
+	task, err := m.CreateTaskWithOptions("MiniApp UI Flow", "audit wxapkg", db.TaskCreateOptions{AppMode: "mobile"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = m.DeleteTask(task.ID, DeleteTaskOptions{}) })
+
+	wxBytes := buildTestPlainWxapkgBytes(t, map[string][]byte{
+		"app.json":       []byte(`{"pages":["pages/index/index","pages/pay/pay"]}`),
+		"app-service.js": []byte(`wx.request({url:"https://api.wx.test/v1/order"}); wx.cloud.init({env:"cloud-demo-1"});`),
+	})
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	_ = mw.WriteField("appid", "wxabcdef1234567890")
+	fw, _ := mw.CreateFormFile("file", "wxabcdef1234567890_plain.wxapkg")
+	_, _ = io.Copy(fw, bytes.NewReader(wxBytes))
+	_ = mw.Close()
+
+	upReq := httptest.NewRequest(http.MethodPost, "/api/apps/upload?scope=task&id="+task.ID, &body)
+	upReq.Header.Set("Content-Type", mw.FormDataContentType())
+	upRR := httptest.NewRecorder()
+	srv.appUpload(upRR, upReq)
+	if upRR.Code != 200 || !strings.Contains(upRR.Body.String(), "wxabcdef1234567890") || !strings.Contains(upRR.Body.String(), `"miniapp"`) {
+		t.Fatalf("miniapp upload failed: code=%d body=%s", upRR.Code, upRR.Body.String())
+	}
+
+	// Run decompile audit and place a screenshot artifact, then confirm getTaskMobileState persists both
+	daReq := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/mobile/decompile-audit", strings.NewReader(`{"mode":"fast"}`))
+	daReq.SetPathValue("id", task.ID)
+	daRR := httptest.NewRecorder()
+	srv.handleTaskMobileDecompileAudit(daRR, daReq)
+	if daRR.Code != 200 {
+		t.Fatalf("miniapp decompile audit failed: code=%d body=%s", daRR.Code, daRR.Body.String())
+	}
+
+	shotDir := filepath.Join(m.dir, "tasks", task.ID, "screenshots")
+	_ = os.MkdirAll(shotDir, 0o755)
+	_ = os.WriteFile(filepath.Join(shotDir, "demo.png"), []byte("\x89PNG\r\n\x1a\nMOCK"), 0o600)
+
+	stReq := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/mobile/state", nil)
+	stReq.SetPathValue("id", task.ID)
+	stRR := httptest.NewRecorder()
+	srv.getTaskMobileState(stRR, stReq)
+	if stRR.Code != 200 || !strings.Contains(stRR.Body.String(), `"decompile_audit"`) || !strings.Contains(stRR.Body.String(), `"demo.png"`) {
+		t.Fatalf("getTaskMobileState missing persisted audit or screenshot: code=%d body=%s", stRR.Code, stRR.Body.String())
+	}
+
+	imgReq := httptest.NewRequest(http.MethodGet, "/api/tasks/"+task.ID+"/mobile/screenshots/demo.png", nil)
+	imgReq.SetPathValue("id", task.ID)
+	imgReq.SetPathValue("name", "demo.png")
+	imgRR := httptest.NewRecorder()
+	srv.getTaskMobileScreenshot(imgRR, imgReq)
+	if imgRR.Code != 200 || !bytes.HasPrefix(imgRR.Body.Bytes(), []byte("\x89PNG")) {
+		t.Fatalf("getTaskMobileScreenshot failed: code=%d", imgRR.Code)
 	}
 }

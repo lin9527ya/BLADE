@@ -8,6 +8,7 @@ type Platform string
 const (
 	PlatformAndroid Platform = "android"
 	PlatformIOS     Platform = "ios"
+	PlatformMiniApp Platform = "miniapp"
 )
 
 // ConnectionType describes how BLADE talks to an attached mobile device.
@@ -135,6 +136,24 @@ type PackageMetadata struct {
 	InspectedAtUnix      int64                  `json:"inspected_at_unix"`
 	SplitAPKNames        []string               `json:"split_apk_names,omitempty"`
 	NetworkSecTrustUser  bool                   `json:"network_sec_trust_user,omitempty"`
+	MiniApp              *MiniAppSummary        `json:"miniapp,omitempty"`
+}
+
+// MiniAppSummary captures metadata specific to WeChat/Mini-Program packages (.wxapkg / .zip).
+type MiniAppSummary struct {
+	AppID              string   `json:"appid,omitempty"`
+	ContainerType      string   `json:"container_type,omitempty"` // plain | v1mmwx | mac_legacy | zip_bundle
+	EncryptionDetected bool     `json:"encryption_detected,omitempty"`
+	PackageCount       int      `json:"package_count,omitempty"`
+	FileCount          int      `json:"file_count,omitempty"`
+	Routes             []string `json:"routes,omitempty"`
+	SubPackages        []string `json:"sub_packages,omitempty"`
+	Plugins            []string `json:"plugins,omitempty"`
+	CloudEnvs          []string `json:"cloud_envs,omitempty"`
+	CloudFunctions     []string `json:"cloud_functions,omitempty"`
+	CloudCollections   []string `json:"cloud_collections,omitempty"`
+	MapKeys            []string `json:"map_keys,omitempty"`
+	HasCompiledTpl     bool     `json:"has_compiled_template,omitempty"`
 }
 
 // DeviceInfo describes an attached or saved mobile test device.

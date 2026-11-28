@@ -64,8 +64,9 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState("");
 
-  // Upload APK to existing task
+  // Upload APK/WXAPKG to existing task
   const [uploadPct, setUploadPct] = React.useState<number | null>(null);
+  const [hintAppID, setHintAppID] = React.useState("");
   const sampleInputRef = React.useRef<HTMLInputElement>(null);
 
   // Device connect / bind form
@@ -163,11 +164,11 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
     if (!file) return;
     setUploadPct(0);
     try {
-      await api.uploadAppPackage("task", taskId, file, (pct) => setUploadPct(pct));
+      await api.uploadAppPackage("task", taskId, file, (pct) => setUploadPct(pct), hintAppID);
       toast.success(`已上传并解析样本：${file.name}`);
       await refreshState();
     } catch (e) {
-      toast.error(`上传安装包失败：${(e as Error).message}`);
+      toast.error(`上传应用包失败：${(e as Error).message}`);
     } finally {
       setUploadPct(null);
       if (sampleInputRef.current) sampleInputRef.current.value = "";
@@ -216,6 +217,7 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
   }
 
   const manifest = state?.manifest;
+  const activeAudit = decompileAudit ?? state?.decompile_audit ?? null;
   const bound = state?.bound_device;
   const scopeSet = new Set((state?.scope_hosts ?? []).map((h) => h.toLowerCase()));
 
@@ -235,9 +237,18 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                 <SmartphoneIcon className="size-4" />
                 应用样本与静态体检
               </CardTitle>
-              <CardDescription>支持最大 1024 MiB APK / AAB / XAPK / IPA 流式上传与纯原生解析</CardDescription>
+              <CardDescription>
+                支持最大 1024 MiB APK / AAB / XAPK / IPA / WXAPKG(ZIP) 流式上传与纯原生解析
+              </CardDescription>
             </div>
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Input
+                placeholder="可选 wxAppID"
+                aria-label="可选微信小程序 AppID"
+                value={hintAppID}
+                onChange={(e) => setHintAppID(e.target.value)}
+                className="h-8 w-28 font-mono text-xs"
+              />
               {manifest && state?.app_sample_paths?.length ? (
                 <>
                   <Button
@@ -259,22 +270,25 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                     disabled={busy !== ""}
                     onClick={() =>
                       void runAction("反编译白盒审计", async () => {
-                        const r = await api.runTaskMobileDecompileAudit(taskId, { mode: "auto" });
+                        const r = await api.runTaskMobileDecompileAudit(taskId, {
+                          mode: "auto",
+                          appid: hintAppID.trim() || undefined,
+                        });
                         setDecompileAudit(r.audit);
                         toast.success(
-                          `反编译白盒审计完成（quality=${r.audit.quality_status}，端点=${r.audit.endpoints?.length ?? 0}）`,
+                          `解包白盒审计完成（quality=${r.audit.quality_status}，端点=${r.audit.endpoints?.length ?? 0}）`,
                         );
                       })
                     }
                   >
-                    反编译白盒审计
+                    {manifest.platform === "miniapp" ? "小程序解包审计" : "反编译白盒审计"}
                   </Button>
                 </>
               ) : null}
               <input
                 ref={sampleInputRef}
                 type="file"
-                accept=".apk,.aab,.xapk,.apkm,.apks,.ipa"
+                accept=".apk,.aab,.xapk,.apkm,.apks,.ipa,.wxapkg,.zip"
                 className="hidden"
                 onChange={(e) => void handleSampleUpload(e.target.files)}
               />
@@ -285,7 +299,7 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                 onClick={() => sampleInputRef.current?.click()}
               >
                 <UploadIcon className="size-3.5" />
-                {uploadPct !== null ? `上传中 ${uploadPct}%` : "上传安装包"}
+                {uploadPct !== null ? `上传中 ${uploadPct}%` : "上传应用包"}
               </Button>
             </div>
           </CardHeader>
@@ -316,21 +330,72 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                   {manifest.signature_schemes && manifest.signature_schemes.length > 0 && (
                     <Badge variant="outline">签名: {manifest.signature_schemes.join("/")}</Badge>
                   )}
+                  {manifest.miniapp?.container_type && (
+                    <Badge variant="outline">容器: {manifest.miniapp.container_type}</Badge>
+                  )}
+                  {manifest.miniapp?.encryption_detected && (
+                    <Badge className="bg-amber-500/15 text-amber-600 dark:text-amber-400">V1MMWX 加密外壳</Badge>
+                  )}
                 </div>
 
-                {decompileAudit && (
-                  <div className="grid gap-1.5 rounded-md border bg-muted/20 p-2.5">
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium">
-                      <span>反编译白盒审计 ({decompileAudit.quality_status})</span>
+                {manifest.platform === "miniapp" && manifest.miniapp && (
+                  <div className="grid gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2.5 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2 font-medium">
+                      <span>微信小程序画像 ({manifest.miniapp.appid || manifest.package_name || "待补充 AppID"})</span>
                       <span className="font-mono text-[11px] text-muted-foreground">
-                        Java {decompileAudit.java_file_count} · Smali {decompileAudit.smali_file_count} · 端点{" "}
-                        {decompileAudit.endpoints?.length ?? 0} · 秘钥提示 {decompileAudit.secrets?.length ?? 0} ·
-                        签名候选 {decompileAudit.sign_candidates?.length ?? 0}
+                        子包 {manifest.miniapp.package_count ?? 1} · 内部文件 {manifest.miniapp.file_count ?? 0} · 路由{" "}
+                        {manifest.miniapp.routes?.length ?? 0}
                       </span>
                     </div>
-                    {decompileAudit.endpoints && decompileAudit.endpoints.length > 0 && (
+                    {manifest.miniapp.routes && manifest.miniapp.routes.length > 0 && (
+                      <div className="flex flex-wrap gap-1 font-mono text-[11px]">
+                        {manifest.miniapp.routes.slice(0, 12).map((rt) => (
+                          <Badge key={rt} variant="secondary" className="font-mono text-[10px]">
+                            {rt}
+                          </Badge>
+                        ))}
+                        {manifest.miniapp.routes.length > 12 && (
+                          <span className="text-muted-foreground">+{manifest.miniapp.routes.length - 12} 路由</span>
+                        )}
+                      </div>
+                    )}
+                    {(manifest.miniapp.cloud_envs?.length ||
+                      manifest.miniapp.cloud_functions?.length ||
+                      manifest.miniapp.cloud_collections?.length) && (
+                      <div className="space-y-1 rounded bg-background/70 p-2 font-mono text-[11px]">
+                        {manifest.miniapp.cloud_envs?.length ? (
+                          <div>CloudEnv: {manifest.miniapp.cloud_envs.join(", ")}</div>
+                        ) : null}
+                        {manifest.miniapp.cloud_functions?.length ? (
+                          <div>
+                            云函数 ({manifest.miniapp.cloud_functions.length}):{" "}
+                            {manifest.miniapp.cloud_functions.slice(0, 8).join(", ")}
+                          </div>
+                        ) : null}
+                        {manifest.miniapp.cloud_collections?.length ? (
+                          <div>
+                            数据集合 ({manifest.miniapp.cloud_collections.length}):{" "}
+                            {manifest.miniapp.cloud_collections.slice(0, 8).join(", ")}
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {activeAudit && (
+                  <div className="grid gap-1.5 rounded-md border bg-muted/20 p-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-medium">
+                      <span>解包与源码白盒审计 ({activeAudit.quality_status})</span>
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        扫描 {activeAudit.scanned_files} 文件 · 端点 {activeAudit.endpoints?.length ?? 0} · 秘钥提示{" "}
+                        {activeAudit.secrets?.length ?? 0} · 签名候选 {activeAudit.sign_candidates?.length ?? 0} · 风险{" "}
+                        {activeAudit.risks?.length ?? 0}
+                      </span>
+                    </div>
+                    {activeAudit.endpoints && activeAudit.endpoints.length > 0 && (
                       <div className="max-h-28 space-y-1 overflow-auto font-mono text-[11px]">
-                        {decompileAudit.endpoints.slice(0, 10).map((ep, idx) => (
+                        {activeAudit.endpoints.slice(0, 12).map((ep, idx) => (
                           <div key={`${ep.url}:${ep.line}:${idx}`} className="truncate text-muted-foreground">
                             [{ep.method || "URL"}] {ep.url}{" "}
                             <span className="opacity-70">
@@ -340,16 +405,28 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                         ))}
                       </div>
                     )}
-                    {decompileAudit.secrets && decompileAudit.secrets.length > 0 && (
+                    {activeAudit.secrets && activeAudit.secrets.length > 0 && (
                       <div className="max-h-24 space-y-1 overflow-auto font-mono text-[11px]">
-                        {decompileAudit.secrets.slice(0, 6).map((sc, idx) => (
+                        {activeAudit.secrets.slice(0, 8).map((sc, idx) => (
                           <div
                             key={`${sc.kind}:${sc.line}:${idx}`}
                             className="truncate text-amber-600 dark:text-amber-400"
                           >
-                            [{sc.kind}] {sc.preview}{" "}
+                            [{sc.kind}] {sc.masked}{" "}
                             <span className="opacity-70">
                               ({sc.file}:{sc.line})
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {activeAudit.sign_candidates && activeAudit.sign_candidates.length > 0 && (
+                      <div className="max-h-24 space-y-1 overflow-auto font-mono text-[11px]">
+                        {activeAudit.sign_candidates.slice(0, 8).map((sg, idx) => (
+                          <div key={`${sg.file}:${sg.line}:${idx}`} className="truncate text-sky-600 dark:text-sky-400">
+                            [SIGN:{sg.hint}] {sg.snippet}{" "}
+                            <span className="opacity-70">
+                              ({sg.file}:{sg.line})
                             </span>
                           </div>
                         ))}
@@ -1242,6 +1319,34 @@ export function MobileWorkbenchTab({ taskId }: { taskId: string }) {
                         {el.center_x},{el.center_y}
                       </span>
                     </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {state?.screenshots && state.screenshots.length > 0 && (
+              <div className="grid gap-1.5 rounded-md border p-2">
+                <div className="text-[11px] font-medium text-muted-foreground">
+                  已保存截图证据 ({state.screenshots.length})
+                </div>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {state.screenshots.map((shot) => (
+                    <a
+                      key={shot}
+                      href={api.taskMobileScreenshotUrl(taskId, shot)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="group shrink-0 overflow-hidden rounded border bg-black/5 text-center"
+                    >
+                      <img
+                        src={api.taskMobileScreenshotUrl(taskId, shot)}
+                        alt={shot}
+                        className="h-24 w-16 object-cover transition-transform group-hover:scale-105"
+                      />
+                      <div className="max-w-16 truncate px-1 py-0.5 font-mono text-[9px] text-muted-foreground">
+                        {shot}
+                      </div>
+                    </a>
                   ))}
                 </div>
               </div>

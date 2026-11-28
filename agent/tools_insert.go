@@ -853,7 +853,7 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		t.enumPrivilege(),
 		// SRC 领域工具（Pojun 借鉴第一批）：只组命令/落脚本，执行仍走 Bash，
 		// 因而自动经过流量录制、审批与出口代理。
-		t.httpProbe(), t.jsAudit(), t.authRequest(), t.pocScaffold(),
+		t.httpProbe(), t.jsAudit(), t.miniappAudit(), t.authRequest(), t.pocScaffold(),
 		t.httpRequest(), t.sessionLogin(),
 		t.diffResponses(), t.apiContractTool(),
 		// OAST（带外回调）：盲打类漏洞的唯一确认手段；未配置时由 server 从工具面移除。
@@ -901,7 +901,7 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		// 出口被 WAF 封禁时切换 Clash 节点。
 		t.rotateEgressTool(),
 		// SRC 领域工具（只读/组命令，human-in-the-loop 也可用）。
-		t.httpProbe(), t.jsAudit(), t.authRequest(), t.pocScaffold(),
+		t.httpProbe(), t.jsAudit(), t.miniappAudit(), t.authRequest(), t.pocScaffold(),
 		t.httpRequest(), t.sessionLogin(),
 		t.diffResponses(), t.apiContractTool(),
 		// verify_credential（P36）：拿凭据真的登进去了，就把「这条目标上验证过」补上——
