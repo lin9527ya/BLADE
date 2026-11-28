@@ -45,6 +45,7 @@ import type { TaskConstraint, TaskScopeRow } from "@/lib/types";
 import { ArtifactPanel } from "./_components/artifact-panel";
 import { CollapsibleOverviewCard } from "./_components/collapsible-overview-card";
 import { ExplorationTrackingCard } from "./_components/exploration-tracking-card";
+import { GoalProofReview } from "./_components/goal-proof-review";
 import {
   TaskAssetScopeCard,
   TaskCredentialBudgetCard,
@@ -436,7 +437,7 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                   </Button>
                 </div>
               ) : (
-                <div key={g.id} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
+                <div key={g.id} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm">
                   <StatusBadge domain="goal" value={g.state} />
                   <span className="min-w-0 flex-1 break-words">{g.text}</span>
                   {g.vulnclass && (
@@ -487,6 +488,11 @@ export function OverviewTab({ taskId, sseConnected = false }: { taskId: string; 
                   >
                     <Trash2Icon className="size-3.5 text-red-500" />
                   </Button>
+                  {g.state === "met" && g.proof_review && (
+                    <div className="basis-full">
+                      <GoalProofReview taskId={taskId} goalId={g.id} summary={g.proof_review} />
+                    </div>
+                  )}
                 </div>
               ),
             )}

@@ -236,6 +236,7 @@ GET /api/tasks/{id}/coverage-graph	server.(*Server).taskCoverageGraph-fm
 GET /api/tasks/{id}/events	server.(*Server).taskLiveStream-fm
 GET /api/tasks/{id}/footprints	server.(*Server).listFootprints-fm
 GET /api/tasks/{id}/goals	server.(*Server).listGoals-fm
+GET /api/tasks/{id}/goals/{gid}/proofs	server.(*Server).listGoalProofs-fm
 GET /api/tasks/{id}/hints	server.(*Server).listHints-fm
 GET /api/tasks/{id}/intent-assets	server.(*Server).taskIntentAssets-fm
 GET /api/tasks/{id}/intents/{iid}/side-questions	server.(*Server).registerSideRoutes.func1

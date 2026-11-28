@@ -1,7 +1,9 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,12 +23,80 @@ func (s *Server) listGoals(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "task not found")
 		return
 	}
-	goals, err := t.Store.ListByKind(db.KindGoal, 10000)
+	ctx := r.Context()
+	var goals []GoalDTO
+	err := t.Store.ReadSnapshot(ctx, func(_ *db.DB, store *db.ExplorationStore) error {
+		nodes, err := store.ListByKind(db.KindGoal, 10000)
+		if err != nil {
+			return err
+		}
+		var met []int64
+		for _, n := range nodes {
+			if n.State == "met" {
+				met = append(met, n.ID)
+			}
+		}
+		reviews, err := store.GoalProofSummaries(ctx, met)
+		if err != nil {
+			return err
+		}
+		goals = make([]GoalDTO, 0, len(nodes))
+		for _, n := range nodes {
+			g := goalDTO(n)
+			if n.State == "met" {
+				summary := reviews[n.ID]
+				g.ProofReview = &summary
+			}
+			goals = append(goals, g)
+		}
+		return nil
+	})
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"goals": goalDTOs(goals)})
+	writeJSON(w, 200, map[string]any{"goals": goals})
+}
+
+func (s *Server) listGoalProofs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "private, no-store")
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("gid"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, 400, "invalid goal id")
+		return
+	}
+	var before int64
+	q := r.URL.Query()
+	if q.Has("before") {
+		before, err = strconv.ParseInt(q.Get("before"), 10, 64)
+		if err != nil || before < 1 {
+			writeErr(w, 400, "invalid before cursor")
+			return
+		}
+	}
+	limit := 20
+	if q.Has("limit") {
+		limit, err = strconv.Atoi(q.Get("limit"))
+		if err != nil || limit < 1 || limit > 100 {
+			writeErr(w, 400, "limit must be between 1 and 100")
+			return
+		}
+	}
+	page, err := t.Store.GoalProofs(r.Context(), id, before, limit)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeErr(w, 404, "goal not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, page)
 }
 
 // addGoal 人工新增一个目标:落库(初始不连任务根)→ 记一条「新增了目标」触发唤醒

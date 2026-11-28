@@ -18,7 +18,8 @@ func (s *Server) registerWorkspaceRoutes(mux routeRegistrar) {
 	mux.HandleFunc("GET /api/tasks/{id}/scope", s.taskScopeList)
 	mux.HandleFunc("POST /api/tasks/{id}/scope", s.taskScopeAdd)
 	mux.HandleFunc("DELETE /api/tasks/{id}/scope/{sid}", s.taskScopeDelete)
-	mux.HandleFunc("GET /api/tasks/{id}/goals", s.listGoals)                           // 目标管理:列出本任务全部目标
+	mux.HandleFunc("GET /api/tasks/{id}/goals", s.listGoals) // 目标管理:列出本任务全部目标
+	mux.HandleFunc("GET /api/tasks/{id}/goals/{gid}/proofs", s.listGoalProofs)
 	mux.HandleFunc("POST /api/tasks/{id}/goals", s.addGoal)                            // 目标管理:人工新增目标(复活任务)
 	mux.HandleFunc("PATCH /api/tasks/{id}/goals/{gid}", s.editGoal)                    // 目标管理:修改目标(复活任务)
 	mux.HandleFunc("DELETE /api/tasks/{id}/goals/{gid}", s.deleteGoal)                 // 目标管理:硬删除目标(不复活)

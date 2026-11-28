@@ -64,7 +64,7 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 	if _, err := tx.Exec(`LOCK TABLE assets, exploration_anchors IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`LOCK TABLE findings, exploration_nodes, finding_comments, finding_retests,
+	if _, err := tx.Exec(`LOCK TABLE findings, exploration_nodes, exploration_edges, goal_proof_refs, finding_comments, finding_retests,
 finding_case_members, finding_case_blocks, credential_checks, main_sessions, completion_waivers,
 task_planner_state, task_timeout_events
 IN SHARE ROW EXCLUSIVE MODE`); err != nil {
@@ -274,7 +274,13 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 	}
 	// Insert graph rows in foreign-key order. The archived stub has no graph rows,
 	// so an ID conflict signals external corruption and must stop the restore.
-	for _, table := range []string{"exploration_nodes", "exploration_edges", "exploration_anchors", "task_constraints", "activity"} {
+	if err := insertArchiveRows(tx, "exploration_nodes", remappedTables["exploration_nodes"]); err != nil {
+		return nil, fmt.Errorf("restore exploration_nodes: %w", err)
+	}
+	if err := restoreProofRefsAndEdges(tx, snapshot); err != nil {
+		return nil, fmt.Errorf("restore proof references and graph edges: %w", err)
+	}
+	for _, table := range []string{"exploration_anchors", "task_constraints", "activity"} {
 		if err := insertArchiveRows(tx, table, remappedTables[table]); err != nil {
 			return nil, fmt.Errorf("restore %s: %w", table, err)
 		}
@@ -409,6 +415,59 @@ func rowExists(tx *sql.Tx, table string, id int64) (bool, error) {
 		return false, fmt.Errorf("check archived reference %s#%d: %w", table, id, err)
 	}
 	return exists, nil
+}
+
+// Restore citations before their edges so an unavailable inherited source can
+// keep its receipt. Missing local endpoints are still integrity errors.
+func restoreProofRefsAndEdges(tx *sql.Tx, snapshot *TaskArchiveSnapshot) error {
+	expID := snapshot.ExplorationID
+	edges := snapshot.Tables["exploration_edges"]
+	if len(edges) == 0 {
+		edges = json.RawMessage("[]")
+	}
+	if snapshot.FormatVersion >= 5 {
+		refs := snapshot.Tables["goal_proof_refs"]
+		want, ok := snapshot.DataCounts["goal_proof_refs"]
+		if !ok || len(refs) == 0 || rawRowCount(refs) != want {
+			return fmt.Errorf("%w: invalid goal proof references", ErrTaskArchiveFormatMismatch)
+		}
+		res, err := tx.Exec(`INSERT INTO goal_proof_refs SELECT r.* FROM json_populate_recordset(NULL::goal_proof_refs,$1::json) r
+JOIN exploration_nodes g ON g.id=r.goal_id AND g.exploration_id=$2 AND g.kind='goal'`, string(refs), expID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != want {
+			return fmt.Errorf("%w: invalid proof goal ownership", ErrTaskArchiveFormatMismatch)
+		}
+	} else {
+		// Recover the identifier even if a legacy package outlived its source.
+		if _, err := tx.Exec(`INSERT INTO goal_proof_refs(goal_id,goal_version,evidence_id,proved_at)
+SELECT g.id,g.content_version,e.src_id,COALESCE(blackboard_time(e.attrs->>'proved_at'),
+    CASE WHEN g.payload->>'proved_by_evidence_id'=e.src_id::text THEN blackboard_time(g.payload->>'proved_at') END)
+FROM json_populate_recordset(NULL::exploration_edges,$1::json) e JOIN exploration_nodes g ON g.id=e.dst_id
+WHERE e.rel='proves' AND e.exploration_id=$2 AND g.exploration_id=$2 AND g.kind='goal' AND g.state='met'
+    AND NOT EXISTS (SELECT 1 FROM exploration_nodes n WHERE n.id=e.src_id)
+ON CONFLICT DO NOTHING`, string(edges), expID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO exploration_edges SELECT e.*
+FROM json_populate_recordset(NULL::exploration_edges,$1::json) e
+WHERE e.rel<>'proves' OR EXISTS (SELECT 1 FROM exploration_nodes n WHERE n.id=e.src_id)
+   OR NOT EXISTS (SELECT 1 FROM goal_proof_refs r JOIN exploration_nodes g ON g.id=r.goal_id
+       WHERE g.exploration_id=$2 AND e.exploration_id=$2 AND r.goal_id=e.dst_id AND r.evidence_id=e.src_id
+         AND r.source_exploration_id IS DISTINCT FROM g.exploration_id)`, string(edges), expID); err != nil {
+		return err
+	}
+	if snapshot.FormatVersion < 5 {
+		_, err := tx.Exec(`SELECT backfill_goal_proof_refs($1)`, expID)
+		return err
+	}
+	return nil
 }
 
 func insertArchiveRows(tx *sql.Tx, table string, raw json.RawMessage) error {
@@ -672,6 +731,9 @@ func remapArchiveAssetReferences(tables map[string]json.RawMessage, mapping map[
 			key := "asset_ids"
 			container := row
 			if table == "exploration_nodes" {
+				if row["proof_material_version"] == nil {
+					row["proof_material_version"] = 0
+				}
 				payload, ok := row["payload"].(map[string]any)
 				if !ok {
 					continue
@@ -1061,6 +1123,7 @@ func assertArchiveContentMatches(tx *sql.Tx, taskID, expID int64, snapshot *Task
 		name, query string
 		args        []any
 	}{
+		{"goal_proof_refs", archiveGoalProofRefs, []any{expID}},
 		{"findings", `SELECT * FROM findings WHERE task_id=$1 ORDER BY id`, []any{taskID}},
 		{"finding_comments", `SELECT c.* FROM finding_comments c JOIN findings f ON f.id=c.finding_id WHERE f.task_id=$1 ORDER BY c.id`, []any{taskID}},
 		{"finding_retests", `SELECT r.* FROM finding_retests r JOIN findings f ON f.id=r.finding_id WHERE f.task_id=$1 ORDER BY r.id`, []any{taskID}},

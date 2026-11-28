@@ -279,3 +279,109 @@ CROSS JOIN LATERAL jsonb_array_elements(
 WHERE n.kind='credential' AND jsonb_typeof(t.elem)='object'
   AND NOT EXISTS (SELECT 1 FROM credential_targets ct WHERE ct.node_id=n.id)
 ON CONFLICT (node_id, ordinal) DO NOTHING;
+
+-- The human review baseline follows the goal. Evidence and source IDs are
+-- historical references and must survive deletion of the referenced rows.
+ALTER TABLE exploration_nodes ADD COLUMN IF NOT EXISTS proof_material_version BIGINT NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS goal_proof_refs (
+    goal_id BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+    goal_version INT NOT NULL,
+    evidence_id BIGINT NOT NULL,
+    source_exploration_id BIGINT,
+    evidence_kind TEXT,
+    proved_at TIMESTAMPTZ,
+    material_version BIGINT,
+    finding_id BIGINT,
+    finding_version BIGINT,
+    finding_status TEXT,
+    PRIMARY KEY (goal_id, goal_version, evidence_id)
+);
+ALTER TABLE goal_proof_refs ADD COLUMN IF NOT EXISTS hide_reason BOOLEAN NOT NULL DEFAULT false;
+
+-- A rationale may quote the evidence verbatim. Apply this at proof time and
+-- on display so revising the evidence cannot expose the original material.
+CREATE OR REPLACE FUNCTION goal_review_reason_visible(kind TEXT, reason TEXT, payload JSONB, finding_evidence TEXT)
+RETURNS BOOLEAN LANGUAGE sql IMMUTABLE AS $$
+    SELECT kind IN ('fact','finding') AND NOT EXISTS (
+        SELECT 1 FROM (VALUES (finding_evidence), (payload->>'evidence'), (payload->>'value'),
+                              (payload->>'password'), (payload->>'secret'), (payload->>'token')) fields(body)
+        WHERE body <> '' AND strpos(reason,body) > 0
+    )
+$$;
+
+CREATE OR REPLACE FUNCTION bump_proof_material_version() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.proof_material_version := OLD.proof_material_version + 1;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS trg_proof_material_version ON exploration_nodes;
+CREATE TRIGGER trg_proof_material_version BEFORE UPDATE OF payload, state ON exploration_nodes
+FOR EACH ROW WHEN (NEW.kind IN ('fact','finding','credential','foothold')
+    AND (OLD.payload IS DISTINCT FROM NEW.payload OR OLD.state IS DISTINCT FROM NEW.state))
+EXECUTE FUNCTION bump_proof_material_version();
+
+-- A legacy citation has no proof-time baseline, even if the evidence still exists.
+CREATE OR REPLACE FUNCTION backfill_goal_proof_refs(board BIGINT) RETURNS void LANGUAGE sql AS $$
+    INSERT INTO goal_proof_refs(goal_id, goal_version, evidence_id, source_exploration_id, evidence_kind, proved_at)
+    SELECT g.id, g.content_version, e.src_id, n.exploration_id, n.kind, blackboard_time(e.attrs->>'proved_at')
+    FROM exploration_nodes g JOIN exploration_edges e ON e.exploration_id=g.exploration_id
+        AND e.dst_id=g.id AND e.rel='proves'
+    JOIN exploration_nodes n ON n.id=e.src_id
+    WHERE g.kind='goal' AND g.state='met' AND (board IS NULL OR g.exploration_id=board)
+    ON CONFLICT DO NOTHING;
+
+    INSERT INTO goal_proof_refs(goal_id, goal_version, evidence_id, source_exploration_id, evidence_kind, proved_at)
+    SELECT g.id, g.content_version, original.id, n.exploration_id, n.kind, blackboard_time(g.payload->>'proved_at')
+    FROM exploration_nodes g
+    CROSS JOIN LATERAL (SELECT CASE WHEN g.payload->>'proved_by_evidence_id' ~ '^[1-9][0-9]{0,18}$'
+        THEN CASE WHEN (g.payload->>'proved_by_evidence_id')::numeric <= 9223372036854775807
+                  THEN (g.payload->>'proved_by_evidence_id')::bigint END END AS id) original
+    LEFT JOIN exploration_nodes n ON n.id=original.id
+    WHERE g.kind='goal' AND g.state='met' AND original.id IS NOT NULL AND (board IS NULL OR g.exploration_id=board)
+    ON CONFLICT DO NOTHING;
+$$;
+
+DO $$ BEGIN
+    INSERT INTO settings(key,value) VALUES ('goal_proof_refs_backfilled_v1','true') ON CONFLICT DO NOTHING;
+    IF FOUND THEN PERFORM backfill_goal_proof_refs(NULL); END IF;
+END $$;
+
+-- Both the human overview and its paginated details use the same visibility
+-- and comparison rules. The projection includes no evidence payload.
+CREATE OR REPLACE VIEW goal_proof_review AS
+SELECT g.exploration_id, g.id AS goal_id, r.evidence_id, r.proved_at,
+    CASE WHEN access.visible THEN r.evidence_kind END AS kind,
+    CASE WHEN NOT r.hide_reason AND goal_review_reason_visible(n.kind,edge.attrs->>'reason',n.payload,f.evidence)
+         THEN edge.attrs->>'reason' END AS reason,
+    (access.visible OR r.source_exploration_id IS NULL) AND r.material_version IS NULL AS history_unknown,
+    CASE WHEN NOT access.visible THEN ARRAY['source_unavailable']
+         WHEN n.id IS NULL THEN ARRAY['evidence_removed']
+         ELSE array_remove(ARRAY[
+             CASE WHEN edge.src_id IS NULL THEN 'relation_removed' END,
+             CASE WHEN n.proof_material_version <> r.material_version THEN 'material_changed' END,
+             CASE WHEN r.material_version IS NOT NULL AND r.evidence_kind='finding' THEN
+                 CASE WHEN f.id IS DISTINCT FROM r.finding_id THEN 'finding_record_changed'
+                      WHEN f.evidence_version <> r.finding_version THEN 'finding_evidence_changed' END END,
+             CASE WHEN f.id=r.finding_id AND f.status <> r.finding_status THEN 'finding_status_changed' END
+         ], NULL) END AS changes,
+    array_remove(ARRAY[
+        CASE WHEN blackboard_time(n.payload->'evidence_meta'->>'valid_until') <= now() THEN 'expired' END,
+        CASE WHEN EXISTS (SELECT 1 FROM exploration_edges e WHERE e.exploration_id=n.exploration_id AND
+            e.rel='contradicts' AND (e.src_id=n.id OR e.dst_id=n.id)) THEN 'contested' END,
+        CASE WHEN EXISTS (SELECT 1 FROM exploration_edges e WHERE e.exploration_id=n.exploration_id AND
+            e.rel='supersedes' AND e.dst_id=n.id) THEN 'superseded' END
+    ], NULL) AS current_flags
+FROM goal_proof_refs r
+JOIN exploration_nodes g ON g.id=r.goal_id AND g.kind='goal' AND g.state='met' AND g.content_version=r.goal_version
+CROSS JOIN LATERAL (SELECT COALESCE(r.source_exploration_id=g.exploration_id, false) OR EXISTS (
+    SELECT 1 FROM tasks owner JOIN task_relations tr ON tr.task_id=owner.id
+    JOIN tasks source ON source.id=tr.source_task_id AND source.deleted_at IS NULL
+    WHERE owner.exploration_id=g.exploration_id AND owner.deleted_at IS NULL
+        AND source.exploration_id=r.source_exploration_id
+) AS visible) access
+LEFT JOIN exploration_nodes n ON access.visible AND n.id=r.evidence_id AND n.exploration_id=r.source_exploration_id
+LEFT JOIN exploration_edges edge ON edge.exploration_id=g.exploration_id AND edge.src_id=n.id
+    AND edge.dst_id=g.id AND edge.rel='proves'
+LEFT JOIN LATERAL (SELECT id,evidence_version,status,evidence FROM findings
+    WHERE n.kind='finding' AND node_id=n.id AND exploration_id=n.exploration_id
+    ORDER BY id DESC LIMIT 1) f ON true;

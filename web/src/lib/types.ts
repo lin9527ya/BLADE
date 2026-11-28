@@ -1021,6 +1021,26 @@ export interface TaskGoal {
   state: string; // GoalState
   origin?: string;
   ts: string;
+  proof_review?: GoalProofSummary;
+}
+
+export interface GoalProofSummary {
+  total: number;
+  needs_review: number;
+  history_unknown: number;
+}
+
+export interface GoalProofPage {
+  proofs: {
+    evidence_id: string;
+    proved_at?: string;
+    kind?: string;
+    reason?: string;
+    changes: string[];
+    current_flags?: string[];
+    history_unknown?: boolean;
+  }[];
+  next_before?: string;
 }
 
 // 战略提示卡片用的一条提示。active=待采纳，consumed=规划者已采纳。

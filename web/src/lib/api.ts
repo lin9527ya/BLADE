@@ -98,6 +98,7 @@ import type {
   GlobalBroadcastPage,
   GlobalBroadcastQuery,
   GlobalSearchResponse,
+  GoalProofPage,
   GraphAuditReport,
   HostToolStatus,
   IMAllowedUser,
@@ -739,6 +740,10 @@ export const api = {
   // 本任务全部目标（text/vulnclass/state）。
   taskGoals: (id: string) =>
     get<{ goals: TaskGoal[] | null }>(`/tasks/${id}/goals`).then((response) => ({ goals: arr(response.goals) })),
+  goalProofs: (id: string, goalId: string, before: string, signal: AbortSignal) =>
+    get<GoalProofPage>(`/tasks/${id}/goals/${goalId}/proofs${before ? `?before=${encodeURIComponent(before)}` : ""}`, {
+      signal,
+    }),
   // 人工新增目标：写入图谱并通知 planner、复活任务。
   addGoal: (id: string, text: string, vulnclass?: string) =>
     post<TaskGoal>(`/tasks/${id}/goals`, { text, vulnclass: vulnclass ?? "" }),

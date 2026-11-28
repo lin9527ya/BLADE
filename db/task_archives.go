@@ -16,10 +16,24 @@ import (
 )
 
 const (
-	TaskArchiveFormatVersion       = 4
+	TaskArchiveFormatVersion       = 5
 	TaskArchiveLegacyFormatVersion = 1
 	TaskArchiveLLMRecordsPath      = "database/llm_records.ndjson"
 )
+
+// The extra archive fields let compaction detect changes to the goal's local
+// evidence between snapshot and deletion. Restoration reads only the ref columns.
+const archiveGoalProofRefs = `SELECT r.*,g.content_version AS archive_goal_version,
+n.proof_material_version AS archive_local_material_version,link.xmin::text AS archive_link_version,
+EXISTS(SELECT 1 FROM exploration_edges e WHERE e.exploration_id=n.exploration_id AND e.rel='contradicts'
+    AND (e.src_id=n.id OR e.dst_id=n.id)) AS archive_contested,
+EXISTS(SELECT 1 FROM exploration_edges e WHERE e.exploration_id=n.exploration_id AND e.rel='supersedes'
+    AND e.dst_id=n.id) AS archive_superseded
+FROM goal_proof_refs r JOIN exploration_nodes g ON g.id=r.goal_id
+LEFT JOIN exploration_nodes n ON n.id=r.evidence_id AND n.exploration_id=g.exploration_id
+LEFT JOIN exploration_edges link ON link.exploration_id=g.exploration_id AND link.dst_id=g.id
+    AND link.src_id=r.evidence_id AND link.rel='proves'
+WHERE g.exploration_id=$1 ORDER BY r.goal_id,r.goal_version,r.evidence_id`
 
 func IsTaskArchiveFormatSupported(version int) bool {
 	return version >= TaskArchiveLegacyFormatVersion && version <= TaskArchiveFormatVersion
@@ -602,6 +616,7 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		{"tasks", `SELECT * FROM tasks WHERE id=$1`, []any{taskID}},
 		{"explorations", `SELECT * FROM explorations WHERE id=$1`, []any{expID}},
 		{"exploration_nodes", `SELECT * FROM exploration_nodes WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
+		{"goal_proof_refs", archiveGoalProofRefs, []any{expID}},
 		{"exploration_edges", `SELECT * FROM exploration_edges WHERE exploration_id=$1 ORDER BY src_id,dst_id`, []any{expID}},
 		{"exploration_anchors", `SELECT anchor.* FROM exploration_anchors anchor JOIN exploration_nodes node ON node.id=anchor.node_id WHERE node.exploration_id=$1 ORDER BY node_id,asset_id`, []any{expID}},
 		{"task_constraints", `SELECT * FROM task_constraints WHERE exploration_id=$1 ORDER BY id`, []any{expID}},

@@ -50,8 +50,9 @@ func (s *ExplorationStore) ProveGoal(goalID, evidenceID int64, reason string) (*
 	defer tx.Rollback()
 
 	var goalKind, goalState string
-	if err := tx.QueryRow(`SELECT kind,state FROM exploration_nodes
-WHERE id=$1 AND exploration_id=$2 FOR UPDATE`, goalID, s.expID).Scan(&goalKind, &goalState); err != nil {
+	var goalVersion int64
+	if err := tx.QueryRow(`SELECT kind,state,content_version FROM exploration_nodes
+WHERE id=$1 AND exploration_id=$2 FOR UPDATE`, goalID, s.expID).Scan(&goalKind, &goalState, &goalVersion); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("目标 %d 必须是本任务的目标节点（关联任务目标只读）", goalID)
 		}
@@ -72,15 +73,24 @@ WHERE id=$1 AND exploration_id=$2 FOR UPDATE`, goalID, s.expID).Scan(&goalKind, 
 	// itself is always written into this exploration, matching Link's behavior
 	// for inherited sources (node ids are globally unique).
 	var evidenceKind string
-	err = tx.QueryRow(`SELECT kind FROM exploration_nodes
-WHERE id=$1 AND (
-  exploration_id=$2 OR exploration_id IN (
+	var sourceID, materialVersion int64
+	var findingID, findingVersion sql.NullInt64
+	var findingStatus sql.NullString
+	var showReason bool
+	err = tx.QueryRow(`SELECT n.kind,n.exploration_id,n.proof_material_version,f.id,f.evidence_version,f.status,
+    goal_review_reason_visible(n.kind,$3,n.payload,f.evidence)
+FROM exploration_nodes n LEFT JOIN LATERAL (
+  SELECT id,evidence_version,status,evidence FROM findings WHERE n.kind='finding' AND node_id=n.id
+      AND exploration_id=n.exploration_id ORDER BY id DESC LIMIT 1
+) f ON true
+WHERE n.id=$1 AND (
+  n.exploration_id=$2 OR n.exploration_id IN (
     SELECT source.exploration_id FROM tasks owner
     JOIN task_relations relation ON relation.task_id=owner.id
     JOIN tasks source ON source.id=relation.source_task_id AND source.deleted_at IS NULL
     WHERE owner.exploration_id=$2 AND owner.deleted_at IS NULL
   )
-)`, evidenceID, s.expID).Scan(&evidenceKind)
+) FOR SHARE OF n`, evidenceID, s.expID, reason).Scan(&evidenceKind, &sourceID, &materialVersion, &findingID, &findingVersion, &findingStatus, &showReason)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("evidence_id 必须是本任务或直接关联任务的事实/漏洞/据点/凭据节点")
 	}
@@ -110,22 +120,25 @@ ON CONFLICT (exploration_id,src_id,rel,dst_id) DO UPDATE SET attrs=EXCLUDED.attr
 		AlreadyMet: goalState == "met",
 	}
 	if goalState == "open" {
-		res, err := tx.Exec(`UPDATE exploration_nodes SET
+		err := tx.QueryRow(`UPDATE exploration_nodes SET
   state='met', blocked_reason=NULL, content_version=content_version+1, updated_at=now(),
   payload = payload || jsonb_build_object(
     'proof_reason',$2::text,'proved_at',to_jsonb(now()),'proved_by_evidence_id',$3::bigint)
-WHERE id=$1 AND exploration_id=$4 AND kind='goal' AND state='open'`,
-			goalID, reason, evidenceID, s.expID)
+WHERE id=$1 AND exploration_id=$4 AND kind='goal' AND state='open' RETURNING content_version`,
+			goalID, reason, evidenceID, s.expID).Scan(&goalVersion)
 		if err != nil {
 			return nil, err
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return nil, err
-		}
-		if n != 1 {
-			return nil, fmt.Errorf("目标 %d 的状态在证明过程中被并发修改，本次未写入", goalID)
-		}
+	}
+	if _, err := tx.Exec(`INSERT INTO goal_proof_refs
+  (goal_id,goal_version,evidence_id,source_exploration_id,evidence_kind,proved_at,material_version,finding_id,finding_version,finding_status,hide_reason)
+VALUES ($1,$2,$3,$4,$5,now(),$6,$7,$8,$9,$10)
+ON CONFLICT (goal_id,goal_version,evidence_id) DO UPDATE SET
+  source_exploration_id=EXCLUDED.source_exploration_id,evidence_kind=EXCLUDED.evidence_kind,proved_at=EXCLUDED.proved_at,
+  material_version=EXCLUDED.material_version,finding_id=EXCLUDED.finding_id,finding_version=EXCLUDED.finding_version,
+  finding_status=EXCLUDED.finding_status,hide_reason=EXCLUDED.hide_reason`, goalID, goalVersion, evidenceID, sourceID, evidenceKind,
+		materialVersion, findingID, findingVersion, findingStatus, !showReason); err != nil {
+		return nil, err
 	}
 	if err := tx.QueryRow(`SELECT COUNT(*),
   COUNT(*) FILTER (WHERE state='met'),
