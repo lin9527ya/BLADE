@@ -23,17 +23,20 @@ import { useI18n } from "@/lib/i18n";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import type { GlobalSearchHit } from "@/lib/types";
 import type { NavMainItem } from "@/navigation/sidebar/sidebar-items";
-import { sidebarItems } from "@/navigation/sidebar/sidebar-items";
+import { quickSearchAliases, sidebarItems } from "@/navigation/sidebar/sidebar-items";
 
 type SearchItem = {
   id: string;
+  groupId?: number;
   group: string;
   label: string;
   subtitle?: string;
+  keywords?: readonly string[];
   url: string;
   icon?: NavMainItem["icon"];
   disabled?: boolean;
   newTab?: boolean;
+  isAlias?: boolean;
 };
 
 type RecentItem = {
@@ -78,37 +81,51 @@ function getSubItemGroup(groupLabel: string | undefined, itemTitle: string) {
   return sidebarGroupLabels.has(itemTitle) ? (groupLabel ?? "Other") : itemTitle;
 }
 
-// 原始（中文）结构：分组判定的逻辑跑在它上面——那一套是拿"标题恰好等于组名"来判父子关系的
-// （上游模板的写法），翻过再比会失配。翻译只发生在展示层。
-const rawSearchItems: SearchItem[] = sidebarItems.flatMap((group) =>
-  group.items.flatMap((item) => {
-    if (item.subItems) {
-      return item.subItems.map((sub) => ({
-        id: sub.id,
-        group: getSubItemGroup(group.label, item.title),
-        label: sub.title,
-        url: sub.url,
-        icon: item.icon,
-        disabled: sub.disabled,
-        newTab: sub.newTab,
-      }));
-    }
-    return [
-      {
-        id: item.id,
-        group: group.label ?? "Other",
-        label: item.title,
-        url: item.url,
-        icon: item.icon,
-        disabled: item.disabled,
-        newTab: item.newTab,
-      },
-    ];
-  }),
-);
+// 原始（中文）结构：保留分组与别名关键词以便统一翻译与搜索，不改变分组归属关系。
+const rawSearchItems: SearchItem[] = [
+  ...sidebarItems.flatMap((group) =>
+    group.items.flatMap((item) => {
+      if (item.subItems) {
+        return item.subItems.map((sub) => ({
+          id: sub.id,
+          group: getSubItemGroup(group.label, item.title),
+          label: sub.title,
+          keywords: sub.keywords,
+          url: sub.url,
+          icon: sub.icon ?? item.icon,
+          disabled: sub.disabled,
+          newTab: sub.newTab,
+        }));
+      }
+      return [
+        {
+          id: item.id,
+          groupId: group.id,
+          group: group.label ?? "Other",
+          label: item.title,
+          keywords: item.keywords,
+          url: item.url,
+          icon: item.icon,
+          disabled: item.disabled,
+          newTab: item.newTab,
+        },
+      ];
+    }),
+  ),
+  ...quickSearchAliases.map((alias) => ({
+    id: alias.id,
+    group: alias.group,
+    label: alias.title,
+    subtitle: alias.subtitle,
+    keywords: alias.keywords,
+    url: alias.url,
+    icon: alias.icon,
+    isAlias: true,
+  })),
+];
 
 function getAvailableItems(items: SearchItem[]) {
-  return items.filter((item) => !item.disabled && !item.url.includes("coming-soon"));
+  return items.filter((item) => !item.disabled && !item.isAlias && !item.url.includes("coming-soon"));
 }
 
 const rawRecommendations = getAvailableItems(rawSearchItems);
@@ -261,7 +278,11 @@ export function SearchDialog() {
     const needle = trimmed.toLowerCase();
     return searchItems.filter(
       (item) =>
-        !item.disabled && (item.label.toLowerCase().includes(needle) || item.group.toLowerCase().includes(needle)),
+        !item.disabled &&
+        (item.label.toLowerCase().includes(needle) ||
+          item.group.toLowerCase().includes(needle) ||
+          (item.subtitle?.toLowerCase().includes(needle) ?? false) ||
+          (item.keywords?.some((kw) => kw.toLowerCase().includes(needle)) ?? false)),
     );
   }, [searchItems, trimmed]);
 
@@ -281,12 +302,17 @@ export function SearchDialog() {
             <CommandItem
               disabled={item.disabled}
               key={`${group}-${item.id}`}
-              value={`page ${group} ${item.label}`}
+              value={`page ${group} ${item.label} ${item.subtitle ?? ""}`}
               onSelect={() => handleSelect(item)}
             >
               <span className="flex min-w-0 items-center gap-2">
                 {item.icon && <item.icon />}
-                <span className="truncate">{item.label}</span>
+                <span className="min-w-0">
+                  <span className="block truncate">{item.label}</span>
+                  {item.subtitle ? (
+                    <span className="block truncate text-muted-foreground text-xs">{item.subtitle}</span>
+                  ) : null}
+                </span>
               </span>
             </CommandItem>
           ))}

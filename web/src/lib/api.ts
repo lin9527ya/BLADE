@@ -1000,9 +1000,9 @@ export const api = {
   runTaskScheduleNow: (id: number) => post<{ task_id: string; note: string }>(`/task-schedules/${id}/run`, {}),
   // 计划任务触发历史（schedule_runs，按 scheduled_at 倒序分页）。
   taskScheduleRuns: (id: number, page = 1, size = 20) =>
-    get<{ runs: ScheduleRun[] | null; total: number; page: number; size: number }>(
+    get<{ runs?: ScheduleRun[] | null; total?: number; page?: number; size?: number }>(
       `/task-schedules/${id}/runs?page=${page}&size=${size}`,
-    ).then((r) => ({ ...r, runs: arr(r.runs) })),
+    ).then((r) => ({ ...r, runs: arr(r?.runs), total: typeof r?.total === "number" ? r.total : 0 })),
 
   // ---- 全局战果与凭据台账（只读） ----
   loot: (params: {
@@ -2739,7 +2739,10 @@ export const api = {
     if (params.q?.trim()) p.set("q", params.q.trim());
     p.set("limit", String(params.limit ?? 50));
     p.set("offset", String(params.offset ?? 0));
-    return get<{ items: VerificationLedgerRow[]; total: number }>(`/verification-ledger?${p}`);
+    return get<{ items?: VerificationLedgerRow[] | null; total?: number }>(`/verification-ledger?${p}`).then((r) => ({
+      items: arr(r?.items),
+      total: typeof r?.total === "number" ? r.total : 0,
+    }));
   },
   /** 只要计数：徽章轮询不该把每一行的完整 tool_input 都拉回来。 */
   interceptPendingCount: () =>

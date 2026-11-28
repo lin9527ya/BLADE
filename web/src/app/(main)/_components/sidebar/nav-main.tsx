@@ -31,6 +31,7 @@ import {
 import { usePolling } from "@/hooks/use-polling";
 import { api } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
+import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { cn } from "@/lib/utils";
 import type {
   NavBadge,
@@ -40,14 +41,18 @@ import type {
   NavMainParentItem,
 } from "@/navigation/sidebar/sidebar-items";
 
+const SIDEBAR_OPEN_STORAGE_KEY = "blade.sidebar.open";
+
 interface NavMainProps {
   readonly items: readonly NavGroup[];
 }
 interface NavItemProps {
   readonly item: NavMainItem;
   readonly isItemActive: (item: NavMainItem) => boolean;
-  readonly isSubItemActive: (url: string) => boolean;
+  readonly isSubItemActive: (url: string, matchUrls?: readonly string[]) => boolean;
   readonly isSubmenuOpen: (item: NavMainParentItem) => boolean;
+  readonly storedOpen?: boolean;
+  readonly onToggleOpen: (id: string, open: boolean) => void;
 }
 
 interface NavLinkItemProps {
@@ -64,14 +69,15 @@ interface NavLinkIconProps {
 interface NavDropdownItemProps {
   readonly item: NavMainParentItem;
   readonly isActive: boolean;
-  readonly isSubItemActive: (url: string) => boolean;
+  readonly isSubItemActive: (url: string, matchUrls?: readonly string[]) => boolean;
 }
 
 interface NavCollapsibleItemProps {
   readonly item: NavMainParentItem;
   readonly isActive: boolean;
-  readonly defaultOpen: boolean;
-  readonly isSubItemActive: (url: string) => boolean;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly isSubItemActive: (url: string, matchUrls?: readonly string[]) => boolean;
 }
 
 function CollapsedIconFallback({ title }: { title: string }) {
@@ -86,18 +92,50 @@ function hasSubItems(item: NavMainItem): item is NavMainParentItem {
   return Boolean(item.subItems?.length);
 }
 
+function matchesTargetPath(path: string, url: string, matchUrls?: readonly string[]): boolean {
+  const candidates = matchUrls && matchUrls.length > 0 ? matchUrls : [url];
+  return candidates.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+function readStoredOpenState(): Record<string, boolean> {
+  const raw = getLocalStorageValue(SIDEBAR_OPEN_STORAGE_KEY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, boolean> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === "boolean") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export function NavMain({ items }: NavMainProps) {
   const { t } = useI18n();
-  // 在这里一次性把标题翻好再往下传：链接/折叠/图标兜底/顶部 tooltip 都在读 item.title，
-  // 替换一处比在每个渲染点包一层 t() 少改十来处，也不会漏掉 tooltip 这类边角。
-  // 词条键按 id 走（nav.<id>），中文原文当兜底——没翻译的地方显示中文，不显示键名。
+  const [openPrefs, setOpenPrefs] = React.useState<Record<string, boolean>>({});
+  const [prefsHydrated, setPrefsHydrated] = React.useState(false);
+
+  React.useEffect(() => {
+    setOpenPrefs(readStoredOpenState());
+    setPrefsHydrated(true);
+  }, []);
+
+  const handleToggleOpen = React.useCallback((id: string, open: boolean) => {
+    setOpenPrefs((prev) => {
+      const next = { ...prev, [id]: open };
+      setLocalStorageValue(SIDEBAR_OPEN_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   const localized = React.useMemo(
     () =>
       items.map((group) => ({
         ...group,
         label: group.label ? t(`nav.group.${group.id}`, group.label) : group.label,
-        // 判别联合（链接项 subItems?: never / 父项 subItems: […]）用 subItems 是否有值来分，
-        // 而不是 `"subItems" in item`：后者在这套类型下没能收窄。
         items: group.items.map((item) =>
           item.subItems
             ? {
@@ -111,7 +149,6 @@ export function NavMain({ items }: NavMainProps) {
     [items, t],
   );
   const rawPath = usePathname();
-  // 路由段含中文，pathname 可能是百分号编码，解码后再与导航 url 比较，保证高亮命中。
   const path = (() => {
     try {
       return decodeURIComponent(rawPath);
@@ -122,20 +159,17 @@ export function NavMain({ items }: NavMainProps) {
 
   const isItemActive = (item: NavMainItem) => {
     if (hasSubItems(item)) {
-      return item.subItems.some((sub) => path.startsWith(sub.url));
+      return item.subItems.some((sub) => matchesTargetPath(path, sub.url, sub.matchUrls));
     }
-
-    // 精确匹配 + 前缀匹配：详情页/别名页（如 /function/tasks/detail、/system/intercept/assets）
-    // 也该把它的所属入口点亮；没有任何条目 URL 是另一条的前缀，不会双重高亮。
-    return path === item.url || path.startsWith(`${item.url}/`);
+    return matchesTargetPath(path, item.url, item.matchUrls);
   };
 
-  const isSubItemActive = (url: string) => {
-    return path === url;
+  const isSubItemActive = (url: string, matchUrls?: readonly string[]) => {
+    return matchesTargetPath(path, url, matchUrls);
   };
 
   const isSubmenuOpen = (item: NavMainParentItem) => {
-    return item.subItems.some((sub) => path.startsWith(sub.url));
+    return item.subItems.some((sub) => matchesTargetPath(path, sub.url, sub.matchUrls));
   };
 
   return (
@@ -156,6 +190,8 @@ export function NavMain({ items }: NavMainProps) {
                   isItemActive={isItemActive}
                   isSubItemActive={isSubItemActive}
                   isSubmenuOpen={isSubmenuOpen}
+                  storedOpen={prefsHydrated ? openPrefs[item.id] : undefined}
+                  onToggleOpen={handleToggleOpen}
                 />
               ))}
             </SidebarMenu>
@@ -166,7 +202,7 @@ export function NavMain({ items }: NavMainProps) {
   );
 }
 
-function NavItem({ item, isItemActive, isSubItemActive, isSubmenuOpen }: NavItemProps) {
+function NavItem({ item, isItemActive, isSubItemActive, isSubmenuOpen, storedOpen, onToggleOpen }: NavItemProps) {
   const { state, isMobile } = useSidebar();
   const isCollapsedDesktop = state === "collapsed" && !isMobile;
 
@@ -178,25 +214,29 @@ function NavItem({ item, isItemActive, isSubItemActive, isSubmenuOpen }: NavItem
     return <NavDropdownItem item={item} isActive={isItemActive(item)} isSubItemActive={isSubItemActive} />;
   }
 
+  const activeRouteInMenu = isSubmenuOpen(item);
+  const open = activeRouteInMenu || (storedOpen ?? false);
+
   return (
     <NavCollapsibleItem
       item={item}
       isActive={isItemActive(item)}
-      defaultOpen={isSubmenuOpen(item)}
+      open={open}
+      onOpenChange={(next) => onToggleOpen(item.id, next)}
       isSubItemActive={isSubItemActive}
     />
   );
 }
 
-// InterceptPendingBadge polls /api/intercept/pending every 5 s and shows a red
-// count badge when there are unresolved approval requests.
+// InterceptPendingBadge polls /api/intercept/pending every 5 s and shows an alert
+// badge both when expanded (count pill) and collapsed to icon rail (corner dot).
 function InterceptPendingBadge() {
   const [count, setCount] = React.useState(0);
   usePolling(
     async (live) => {
       try {
-        const count = await api.interceptPendingCount();
-        if (live()) setCount(count);
+        const nextCount = await api.interceptPendingCount();
+        if (live()) setCount(nextCount);
       } catch {
         /* ignore */
       }
@@ -206,9 +246,16 @@ function InterceptPendingBadge() {
   );
   if (count === 0) return null;
   return (
-    <SidebarMenuBadge className="flex h-4.5 min-w-[18px] items-center justify-center rounded-full bg-amber-500 px-1 font-semibold text-[10px] text-white leading-none shadow-sm ring-1 ring-amber-400/40">
-      {count > 99 ? "99+" : count}
-    </SidebarMenuBadge>
+    <>
+      <SidebarMenuBadge className="flex h-4.5 min-w-[18px] items-center justify-center rounded-full bg-amber-500 px-1 font-semibold text-[10px] text-white leading-none shadow-sm ring-1 ring-amber-400/40">
+        {count > 99 ? "99+" : count}
+      </SidebarMenuBadge>
+      <span
+        aria-hidden="true"
+        title={`${count} 项待审批`}
+        className="pointer-events-none absolute top-1.5 right-1.5 hidden size-2 rounded-full bg-amber-500 ring-2 ring-sidebar group-data-[collapsible=icon]:block"
+      />
+    </>
   );
 }
 
@@ -270,7 +317,7 @@ function NavDropdownItem({ item, isActive, isSubItemActive }: NavDropdownItemPro
                     href={subItem.url}
                     target={subItem.newTab ? "_blank" : undefined}
                     rel={subItem.newTab ? "noreferrer" : undefined}
-                    aria-current={isSubItemActive(subItem.url) ? "page" : undefined}
+                    aria-current={isSubItemActive(subItem.url, subItem.matchUrls) ? "page" : undefined}
                     className="flex items-center gap-2"
                   >
                     {SubIcon && <SubIcon />}
@@ -286,11 +333,11 @@ function NavDropdownItem({ item, isActive, isSubItemActive }: NavDropdownItemPro
   );
 }
 
-function NavCollapsibleItem({ item, isActive, defaultOpen, isSubItemActive }: NavCollapsibleItemProps) {
+function NavCollapsibleItem({ item, isActive, open, onOpenChange, isSubItemActive }: NavCollapsibleItemProps) {
   const Icon = item.icon;
 
   return (
-    <Collapsible asChild defaultOpen={defaultOpen} className="group/collapsible">
+    <Collapsible asChild open={open} onOpenChange={onOpenChange} className="group/collapsible">
       <SidebarMenuItem>
         <CollapsibleTrigger asChild>
           <SidebarMenuButton tooltip={item.title} isActive={isActive} disabled={item.disabled}>
@@ -311,7 +358,7 @@ function NavCollapsibleItem({ item, isActive, defaultOpen, isSubItemActive }: Na
                   <SidebarMenuSubButton
                     asChild
                     aria-disabled={subItem.disabled}
-                    isActive={isSubItemActive(subItem.url)}
+                    isActive={isSubItemActive(subItem.url, subItem.matchUrls)}
                   >
                     <Link
                       prefetch={false}

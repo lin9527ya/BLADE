@@ -2817,8 +2817,10 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/intercept/rules" && m === "GET") return { rules: D.interceptRules };
   if (seg[0] === "intercept" && seg[1] === "rules" && seg[3] === "toggle")
     return { ok: true, enabled: b.enabled ?? true };
-  if (path === "/intercept/pending" && m === "GET")
-    return { pending: mockInterceptHistory.filter((r) => r.status === "pending") };
+  if (path === "/intercept/pending" && m === "GET") {
+    const pending = mockInterceptHistory.filter((r) => r.status === "pending");
+    return { pending, pending_count: pending.length };
+  }
   if (seg[0] === "intercept" && seg[1] === "pending" && seg[3] === "decide") {
     const id = Number(seg[2]);
     const row = mockInterceptHistory.find((r) => r.id === id) ?? mockInterceptPending.find((r) => r.id === id);
@@ -2976,6 +2978,142 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
   if (seg[0] === "tasks" && seg[2] === "mobile" && seg[3] === "ui-crawl" && m === "POST") {
     return { serial: "mock-usb", package: "com.acme.shop", steps_executed: 0, unique_screens_visited: 0, screens: [] };
+  }
+
+  if (path === "/verification-ledger" && m === "GET") {
+    return {
+      items: [
+        {
+          id: 1,
+          task_id: "t-acme-web",
+          task_name: "Acme 官网与后台外部渗透",
+          tool: "http_request",
+          command: "GET https://acme.com/admin",
+          description: "后台弱口令复核",
+          status: "completed",
+          exit_code: 0,
+          partial_tail: "200 OK - Welcome admin",
+          created_at: new Date().toISOString(),
+        },
+      ],
+      total: 1,
+    };
+  }
+
+  if (path === "/loot" && m === "GET") {
+    return {
+      items: [
+        {
+          id: 1,
+          kind: "credential",
+          state: "active",
+          created_at: new Date().toISOString(),
+          task_id: 101,
+          task_name: "Acme 官网与后台外部渗透",
+          summary: "admin@acme.com 后台弱口令",
+          username: "admin",
+          fingerprint: "fp_a1b2",
+          verified_count: 1,
+        },
+      ],
+      total: 1,
+      page: 1,
+      size: 50,
+    };
+  }
+
+  if (path === "/credential-attempts" && m === "GET") {
+    return { items: [], total: 0, page: 1, size: 50 };
+  }
+
+  if (path === "/credentials" && m === "GET") {
+    return {
+      items: [
+        {
+          id: 1,
+          task_id: 101,
+          task_name: "Acme 官网与后台外部渗透",
+          summary: "admin@acme.com 后台弱口令",
+          kind: "password",
+          username: "admin",
+          fingerprint: "fp_a1b2",
+          state: "active",
+          lifecycle: "verified",
+          use_count: 1,
+          created_at: new Date().toISOString(),
+          targets: [{ host: "acme.com", port: 443, service: "https", verified: true }],
+        },
+      ],
+      total: 1,
+      page: 1,
+      size: 50,
+    };
+  }
+
+  if (path === "/footholds" && m === "GET") {
+    return {
+      items: [
+        {
+          id: 1,
+          task_id: 101,
+          task_name: "Acme 官网与后台外部渗透",
+          summary: "app-01 跳板机 WebShell",
+          access: "shell",
+          privilege: "www-data",
+          protocol: "https",
+          host: "203.0.113.10",
+          port: 443,
+          state: "active",
+          tunnels: [],
+          created_at: new Date().toISOString(),
+        },
+      ],
+      total: 1,
+      page: 1,
+      size: 50,
+    };
+  }
+
+  if (path === "/tunnels" && m === "GET") {
+    return { items: [] };
+  }
+
+  if (path === "/api-tokens" && m === "GET") {
+    return {
+      items: [
+        {
+          id: 1,
+          name: "prometheus-scraper",
+          scopes: "read",
+          created_at: new Date().toISOString(),
+        },
+      ],
+    };
+  }
+
+  if (path === "/audit/events" && m === "GET") {
+    return {
+      items: [
+        {
+          id: 1,
+          actor: "admin",
+          method: "POST",
+          path: "/api/tasks",
+          status: 201,
+          ip: "127.0.0.1",
+          user_agent: "Mozilla/5.0",
+          created_at: new Date().toISOString(),
+        },
+      ],
+    };
+  }
+
+  if (path === "/task-schedules" && m === "GET") {
+    return { schedules: [] };
+  }
+
+  if (path === "/task-categories" && m === "GET") {
+    return { categories: [{ id: 1, name: "日常巡检" }] };
   }
 
   // ── 写操作兜底：成功但不落库 ──

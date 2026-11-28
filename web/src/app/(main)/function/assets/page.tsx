@@ -61,6 +61,7 @@ import {
   fmtSeen,
   KIND_LABEL,
 } from "./_components/asset-parts";
+import { ScopeSentrySyncDialog } from "./_components/scope-sentry-panel";
 
 const TABS: { key: string; label: string; icon: LucideIcon }[] = [
   // P28：「全部」是默认档——6 类资产同在一张表里，类型降级为列 + 筛选，不再一类一个标签。
@@ -117,6 +118,14 @@ export default function AssetsPage() {
   const [companyDeleteAssets, setCompanyDeleteAssets] = React.useState(false);
   const [companyDeleting, setCompanyDeleting] = React.useState(false);
   const [reattributing, setReattributing] = React.useState(false);
+  const [syncDialogOpen, setSyncDialogOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (new URLSearchParams(window.location.search).get("action") === "sync") {
+      setSyncDialogOpen(true);
+    }
+  }, []);
 
   // Companies + per-type counts (tab badges) — loaded on demand, no background polling.
   const loadMeta = React.useCallback(() => {
@@ -426,6 +435,7 @@ export default function AssetsPage() {
             {exporting ? "导出中…" : "导出 CSV"}
           </Button>
           <FofaSearchDialog onImported={refresh} />
+          <ScopeSentrySyncDialog defaultOpen={syncDialogOpen} onSynced={refresh} />
           <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
             <RefreshCwIcon className={cn("size-4", loading && "animate-spin")} /> 刷新
           </Button>

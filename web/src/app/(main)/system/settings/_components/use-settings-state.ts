@@ -39,10 +39,15 @@ export const SECTIONS = [
   { id: "intel", label: "情报来源" },
   { id: "policy", label: "安全与策略" },
   { id: "runtime", label: "执行与并发" },
+  { id: "tokens", label: "API 令牌" },
   { id: "advanced", label: "高级与界面" },
 ] as const;
 
 export type SectionId = (typeof SECTIONS)[number]["id"];
+
+export function isSettingsSectionId(v: string | null | undefined): v is SectionId {
+  return Boolean(v && SECTIONS.some((s) => s.id === v));
+}
 
 export function exposureWeight(exposure: string): number {
   switch (exposure) {
@@ -74,7 +79,7 @@ function useSettingsField<T>(
   return [value, edit];
 }
 
-export function useSettingsState() {
+export function useSettingsState(initialSection?: SectionId) {
   const [draftRevision, changed] = React.useReducer((value: number) => value + 1, 0);
   const [drafts] = React.useState(() => createSettingsDrafts(changed));
   const [loadError, setLoadError] = React.useState("");
@@ -255,8 +260,13 @@ export function useSettingsState() {
   const [rotatingClash, setRotatingClash] = React.useState(false);
   const [testing, setTesting] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
-  // 分区导航：一次只渲染一个分区（照 CyberStrikeAI 的设置页骨架）。
-  const [section, setSection] = React.useState<SectionId>("basic");
+  // 分区导航：一次只渲染一个分区（支持 initialSection 与 ?section= 深链）。
+  const [section, setSection] = React.useState<SectionId>(initialSection ?? "basic");
+  React.useEffect(() => {
+    if (typeof window === "undefined" || initialSection) return;
+    const sec = new URLSearchParams(window.location.search).get("section");
+    if (isSettingsSectionId(sec)) setSection(sec);
+  }, [initialSection]);
   // 曾经的共享 `saving` 会让流量捕获 / 网络搜索 / Python 三处互相禁用控件——按用途拆开。
   const [savingTraffic, setSavingTraffic] = React.useState(false);
   const [savingAgentBinding, setSavingAgentBinding] = React.useState(false);
